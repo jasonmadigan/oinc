@@ -225,8 +225,12 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 	// remove old console container if present
 	_ = rt.RemoveContainer(consoleContainer)
 
-	host := rt.ContainerHostAddress()
-	apiEndpoint := fmt.Sprintf("https://%s:6443", host)
+	var apiEndpoint string
+	if goruntime.GOOS == "linux" {
+		apiEndpoint = "https://localhost:6443"
+	} else {
+		apiEndpoint = fmt.Sprintf("https://%s:6443", rt.ContainerHostAddress())
+	}
 
 	env := map[string]string{
 		"BRIDGE_USER_AUTH":                             "disabled",
@@ -250,9 +254,16 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		Name:  consoleContainer,
 		Image: ver.ConsoleImageRef(),
 		Env:   env,
-		Ports: []runtime.PortMapping{
+	}
+
+	// linux: use host networking so the console can reach localhost services
+	// (plugin dev servers, etc). macOS/windows: use port mapping.
+	if goruntime.GOOS == "linux" {
+		opts.Network = "host"
+	} else {
+		opts.Ports = []runtime.PortMapping{
 			{Host: consolePort, Container: 9000},
-		},
+		}
 	}
 
 	// origin-console is amd64 only

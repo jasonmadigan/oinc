@@ -25,6 +25,7 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 - **OLM included** -- baked into the image, operator workflows work out of the box
 - **Addon system** -- layer on Gateway API, cert-manager, MetalLB, Istio, Kuadrant as needed
 - **Console plugin support** -- `--console-plugin "my-plugin=http://localhost:9001"` for plugin dev
+- **Interactive TUI** -- step-by-step progress with spinners, interactive addon picker, live status dashboard
 
 ## Install
 
@@ -71,6 +72,9 @@ oinc create --console-plugin "my-plugin=http://host.docker.internal:9001"
 # cluster status
 oinc status
 
+# interactive status dashboard
+oinc status --watch
+
 # fetch/refresh kubeconfig
 oinc kubeconfig
 
@@ -83,6 +87,17 @@ oinc version list
 # tear down
 oinc delete
 ```
+
+## CLI
+
+Commands show styled progress in a terminal (spinners, checkmarks, boxed output) and fall back to plain log output when piped or in CI.
+
+- `oinc create` -- step-by-step progress with a summary of endpoints on completion
+- `oinc delete` -- confirmation prompt (skip with `--force`)
+- `oinc status` -- boxed endpoint and addon status; `--watch` for a live-updating dashboard with pod listing
+- `oinc addon install` -- interactive picker when run with no arguments; shows installed addons as checked
+- `oinc addon install kuadrant` -- step progress with live sub-status per addon
+- `oinc status -o json` -- machine-readable output for scripting
 
 ## Addons
 
@@ -102,7 +117,10 @@ Dependencies are resolved automatically. Installing `kuadrant` will pull in `gat
 # at create time
 oinc create --addons kuadrant
 
-# or post-hoc
+# or post-hoc (interactive picker)
+oinc addon install
+
+# or specify directly
 oinc addon install gateway-api
 oinc addon list
 ```
@@ -115,7 +133,7 @@ oinc addon install cert-manager@1.16.0
 
 ## Kubeconfig
 
-`oinc create` automatically merges the cluster kubeconfig into `~/.kube/config`. If you need to refresh it:
+`oinc create` automatically merges the cluster kubeconfig into `~/.kube/config` with context name `oinc`. If you need to refresh it:
 
 ```bash
 # merge into ~/.kube/config
@@ -123,6 +141,9 @@ oinc kubeconfig
 
 # print raw kubeconfig to stdout
 oinc kubeconfig --print
+
+# switch to oinc context
+kubectl config use-context oinc
 ```
 
 ## Ports

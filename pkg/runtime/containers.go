@@ -18,6 +18,7 @@ type ContainerOpts struct {
 	Privileged bool
 	Platform   string
 	Env        map[string]string
+	Network    string // e.g. "host" for --network=host
 }
 
 type PortMapping struct {
@@ -53,6 +54,10 @@ func (r *Runtime) CreateContainer(opts ContainerOpts) error {
 
 	if opts.Privileged {
 		args = append(args, "--privileged")
+	}
+
+	if opts.Network != "" {
+		args = append(args, "--network", opts.Network)
 	}
 
 	for _, p := range opts.Ports {
