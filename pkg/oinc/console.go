@@ -225,12 +225,7 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 	// remove old console container if present
 	_ = rt.RemoveContainer(consoleContainer)
 
-	var apiEndpoint string
-	if goruntime.GOOS == "linux" {
-		apiEndpoint = "https://localhost:6443"
-	} else {
-		apiEndpoint = fmt.Sprintf("https://%s:6443", rt.ContainerHostAddress())
-	}
+	apiEndpoint := fmt.Sprintf("https://%s:6443", rt.ContainerHostAddress())
 
 	env := map[string]string{
 		"BRIDGE_USER_AUTH":                             "disabled",

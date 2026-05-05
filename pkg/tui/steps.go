@@ -133,8 +133,8 @@ func (m StepsModel) View() string {
 	return b.String()
 }
 
-func (m StepsModel) Err() error   { return m.err }
-func (m StepsModel) Done() bool   { return m.done }
+func (m StepsModel) Err() error { return m.err }
+func (m StepsModel) Done() bool { return m.done }
 
 func (m StepsModel) runCurrent() tea.Cmd {
 	step := m.steps[m.current]

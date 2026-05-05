@@ -19,8 +19,13 @@ type kuadrant struct {
 	version string
 }
 
-func (k *kuadrant) Name() string           { return "kuadrant" }
-func (k *kuadrant) Dependencies() []string { return []string{"gateway-api", "cert-manager", "metallb", "istio"} }
+func (k *kuadrant) Name() string {
+	return "kuadrant"
+}
+
+func (k *kuadrant) Dependencies() []string {
+	return []string{"gateway-api", "cert-manager", "metallb", "istio"}
+}
 
 func (k *kuadrant) SetOptions(opts map[string]string) {
 	if v, ok := opts["version"]; ok {

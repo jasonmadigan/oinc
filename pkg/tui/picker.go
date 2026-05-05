@@ -18,11 +18,11 @@ type PickerItem struct {
 
 // PickerModel is a multi-select list with keyboard navigation.
 type PickerModel struct {
-	title    string
-	items    []PickerItem
-	cursor   int
-	quitted  bool
-	aborted  bool
+	title   string
+	items   []PickerItem
+	cursor  int
+	quitted bool
+	aborted bool
 }
 
 func NewPickerModel(title string, items []PickerItem) PickerModel {

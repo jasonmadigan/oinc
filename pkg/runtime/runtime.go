@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
-	"runtime"
+	goruntime "runtime"
 	"strings"
 )
 
@@ -36,7 +37,7 @@ func newRuntime(binary string) (*Runtime, error) {
 
 	r := &Runtime{binary: binary}
 
-	if runtime.GOOS != "darwin" {
+	if goruntime.GOOS != "darwin" {
 		if err := r.validate(); err != nil {
 			return nil, err
 		}
@@ -50,13 +51,34 @@ func (r *Runtime) Name() string { return r.binary }
 // ContainerHostAddress returns the hostname the sidecar containers should use
 // to reach services on the host.
 func (r *Runtime) ContainerHostAddress() string {
-	if runtime.GOOS == "linux" {
+	if goruntime.GOOS == "linux" && !RunningInWSL() {
 		return "localhost"
 	}
 	if r.binary == "podman" {
 		return "host.containers.internal"
 	}
 	return "host.docker.internal"
+}
+
+// UseHostNetwork returns whether sidecar containers should use the host network.
+// Docker Desktop-backed WSL reports as Linux, but host networking does not publish
+// ports back to Windows localhost there, so use normal port publishing instead.
+func (r *Runtime) UseHostNetwork() bool {
+	return goruntime.GOOS == "linux" && !RunningInWSL()
+}
+
+func RunningInWSL() bool {
+	for _, path := range []string{"/proc/sys/kernel/osrelease", "/proc/version"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		contents := strings.ToLower(string(data))
+		if strings.Contains(contents, "microsoft") || strings.Contains(contents, "wsl") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) validate() error {
