@@ -61,6 +61,10 @@ func NewStepsModel(title string, steps []*Step) StepsModel {
 }
 
 func (m StepsModel) Init() tea.Cmd {
+	if len(m.steps) == 0 {
+		m.done = true
+		return tea.Quit
+	}
 	return tea.Batch(m.spinner.Tick, m.runCurrent())
 }
 
@@ -137,6 +141,9 @@ func (m StepsModel) Err() error   { return m.err }
 func (m StepsModel) Done() bool   { return m.done }
 
 func (m StepsModel) runCurrent() tea.Cmd {
+	if m.current >= len(m.steps) {
+		return nil
+	}
 	step := m.steps[m.current]
 	return func() tea.Msg {
 		return stepDoneMsg{err: step.Run()}

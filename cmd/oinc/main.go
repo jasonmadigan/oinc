@@ -268,6 +268,10 @@ func main() {
 				if err != nil {
 					return err
 				}
+				if len(steps) == 0 {
+					fmt.Fprintln(os.Stderr, "All requested addons are already installed")
+					return nil
+				}
 				return tui.RunSteps("installing addons", steps)
 			}
 
