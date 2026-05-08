@@ -123,7 +123,7 @@ type fakeAddon struct {
 	deps []string
 }
 
-func (f *fakeAddon) Name() string                              { return f.name }
-func (f *fakeAddon) Dependencies() []string                    { return f.deps }
+func (f *fakeAddon) Name() string                               { return f.name }
+func (f *fakeAddon) Dependencies() []string                     { return f.deps }
 func (f *fakeAddon) Install(_ context.Context, _ *Config) error { return nil }
 func (f *fakeAddon) Ready(_ context.Context, _ *Config) error   { return nil }
