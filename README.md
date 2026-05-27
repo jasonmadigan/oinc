@@ -27,6 +27,15 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 - **Console plugin support** -- `--console-plugin "my-plugin=http://localhost:9001"` for plugin dev
 - **Interactive TUI** -- step-by-step progress with spinners, interactive addon picker, live status dashboard
 
+## Supported versions
+
+| OCP | MicroShift | Console | Architectures |
+|-|-|-|-|
+| 4.21 (default) | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
+| 4.20 | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
+
+Use `/add-version` in Claude Code to add a new version, or see [docs/images.md](docs/images.md) for the manual process.
+
 ## Install
 
 Download a binary from [releases](https://github.com/jasonmadigan/oinc/releases):
@@ -171,4 +180,4 @@ oinc builds on the work of several projects:
 - [microshift-io](https://github.com/microshift-io/microshift) -- OKD-flavoured MicroShift builds and pre-built RPMs
 - [OKD](https://www.okd.io/) -- the community distribution of Kubernetes that powers OpenShift
 - [OpenShift Console](https://github.com/openshift/console) -- the web UI
-- [minc](https://github.com/redhat-et/minc) -- inspiration for running MicroShift in a container
+- [minc](https://github.com/minc-org/minc) -- inspiration for running MicroShift in a container
