@@ -238,9 +238,10 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 	}
 
 	if consolePlugin != "" {
-		parts := strings.SplitN(consolePlugin, "=", 2)
+		resolved := resolvePluginURL(consolePlugin, rt.ContainerHostAddress())
+		parts := strings.SplitN(resolved, "=", 2)
 		if len(parts) == 2 {
-			env["BRIDGE_PLUGINS"] = consolePlugin
+			env["BRIDGE_PLUGINS"] = resolved
 			env["BRIDGE_I18N_NAMESPACES"] = fmt.Sprintf("plugin__%s", parts[0])
 		}
 	}
@@ -270,6 +271,29 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		return err
 	}
 	return rt.StartContainer(consoleContainer)
+}
+
+// resolvePluginURL rewrites the host in a console plugin spec to match the
+// detected container runtime. Accepts:
+//   - name=http://host.containers.internal:9001 → rewritten to correct host
+//   - name=http://host.docker.internal:9001     → rewritten to correct host
+//   - name=http://localhost:9001                 → left as-is (explicit)
+func resolvePluginURL(spec, containerHost string) string {
+	parts := strings.SplitN(spec, "=", 2)
+	if len(parts) != 2 {
+		return spec
+	}
+
+	url := parts[1]
+	// rewrite known container hostnames to match the detected runtime
+	for _, placeholder := range []string{"host.containers.internal", "host.docker.internal"} {
+		if strings.Contains(url, placeholder) {
+			url = strings.Replace(url, placeholder, containerHost, 1)
+			return parts[0] + "=" + url
+		}
+	}
+
+	return spec
 }
 
 func waitForConsole(port int) error {
