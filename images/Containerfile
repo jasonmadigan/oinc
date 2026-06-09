@@ -1,31 +1,27 @@
-# microshift AIO from pre-built RPMs (microshift-io/microshift releases)
+# microshift AIO from COPR nightly RPMs
 FROM quay.io/centos/centos:stream9
 
-ARG RPM_TARBALL
 ARG OCP_VERSION
 ARG WITH_OLM=1
 
-COPY ${RPM_TARBALL} /tmp/rpms.tgz
-
-# install microshift from local RPM repo + openshift deps mirror
-RUN dnf install -y createrepo_c && \
-    mkdir -p /tmp/rpms && \
-    tar xzf /tmp/rpms.tgz -C /tmp/rpms --strip-components=1 && \
-    createrepo_c /tmp/rpms && \
-    printf '[microshift-local]\nname=MicroShift Local\nbaseurl=file:///tmp/rpms\nenabled=1\ngpgcheck=0\n' \
-      > /etc/yum.repos.d/microshift-local.repo && \
+# install microshift from COPR nightly + openshift deps mirror
+# copr repo uses epel-9, map uname arch to copr arch naming
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then COPR_ARCH=aarch64; else COPR_ARCH=x86_64; fi && \
+    printf '[copr-microshift-nightly]\nname=MicroShift Nightly\nbaseurl=https://download.copr.fedorainfracloud.org/results/@microshift-io/microshift-nightly/epel-9-%s/\nenabled=1\ngpgcheck=0\n' \
+      "$COPR_ARCH" \
+      > /etc/yum.repos.d/microshift-nightly.repo && \
     printf '[openshift-deps]\nname=OpenShift Dependencies\nbaseurl=https://mirror.openshift.com/pub/openshift-v4/%s/dependencies/rpms/%s-el9-beta/\nenabled=1\ngpgcheck=0\n' \
-      "$(uname -m)" "${OCP_VERSION}" \
+      "$ARCH" "${OCP_VERSION}" \
       > /etc/yum.repos.d/openshift-deps.repo && \
+    dnf install -y microshift-io-dependencies-${OCP_VERSION} && \
     dnf install -y microshift microshift-release-info \
                    microshift-kindnet microshift-kindnet-release-info && \
     if [ "${WITH_OLM}" = "1" ] ; then \
         dnf install -y microshift-olm microshift-olm-release-info ; \
     fi && \
-    dnf remove -y createrepo_c && \
-    rm -rf /tmp/rpms /tmp/rpms.tgz \
-           /etc/yum.repos.d/microshift-local.repo \
-           /etc/yum.repos.d/openshift-deps.repo && \
+    rm -f /etc/yum.repos.d/openshift-deps.repo \
+         /etc/yum.repos.d/microshift-nightly.repo && \
     dnf clean all
 
 # post-install: firewall, sysctl, CNI plugins, enable microshift

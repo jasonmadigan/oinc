@@ -29,6 +29,13 @@ var catalogue = []OCPVersion{
 		APIBranch:     "release-4.21",
 		Arches:        []string{"amd64", "arm64"},
 	},
+	{
+		Version:       "4.22",
+		MicroShiftTag: "4.22.0-okd-scos.ec.16",
+		ConsoleTag:    "4.22",
+		APIBranch:     "release-4.22",
+		Arches:        []string{"amd64", "arm64"},
+	},
 }
 
 func All() []OCPVersion { return catalogue }
