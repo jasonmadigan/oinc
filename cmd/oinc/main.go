@@ -66,6 +66,18 @@ func main() {
 		Short: "Create a cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := newLogger(flagLogLevel)
+
+			if flagVersion == "" && tui.IsTTY() {
+				picked, err := runVersionPicker()
+				if err != nil {
+					return err
+				}
+				if picked == "" {
+					return nil
+				}
+				flagVersion = picked
+			}
+
 			return oinc.Create(cmd.Context(), oinc.CreateOpts{
 				Version:         flagVersion,
 				RuntimeOverride: flagRuntime,
@@ -325,6 +337,32 @@ Examples:
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func runVersionPicker() (string, error) {
+	all := version.All()
+	def := version.Default()
+
+	var items []tui.VersionItem
+	for _, v := range all {
+		items = append(items, tui.VersionItem{
+			Version:   v.Version,
+			Hint:      "microshift: " + v.MicroShiftTag,
+			IsDefault: v.Version == def.Version,
+		})
+	}
+
+	m := tui.NewVersionPickerModel("select version", items)
+	p := tea.NewProgram(m)
+	final, err := p.Run()
+	if err != nil {
+		return "", err
+	}
+	fm := final.(tui.VersionPickerModel)
+	if fm.Aborted() {
+		return "", nil
+	}
+	return fm.Selected(), nil
 }
 
 func runAddonPicker(runtimeOverride string) ([]string, error) {
