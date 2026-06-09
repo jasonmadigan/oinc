@@ -31,7 +31,8 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 
 | OCP | MicroShift | Console | Architectures |
 |-|-|-|-|
-| 4.21 (default) | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
+| 4.22 (default) | 4.22.0-okd-scos.ec.16 | 4.22 | amd64, arm64 |
+| 4.21 | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
 | 4.20 | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
 
 Use `/add-version` in Claude Code to add a new version, or see [docs/images.md](docs/images.md) for the manual process.

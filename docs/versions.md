@@ -10,16 +10,23 @@ Each supported OCP version is an entry in `pkg/version/version.go`. An entry coo
 
 The last entry in the catalogue is the default. `oinc create` uses it unless `--version` is specified.
 
+## RPM source
+
+MicroShift RPMs come from the `@microshift-io/microshift-nightly` COPR repo, which publishes daily builds for `epel-9-x86_64` and `epel-9-aarch64`. The Containerfile enables this repo at build time via `dnf copr enable`. No tarball downloads or GitHub release assets required.
+
+The openshift-deps mirror (`mirror.openshift.com`) is still used for dependency packages during the image build.
+
 ## Adding a new version
 
 Use the `/add-version` Claude command to scan for new MicroShift releases and add them. It checks upstream resources, presents findings, and applies changes after confirmation.
 
 Or manually:
 
-1. Find the release tag:
+1. Check COPR for available builds:
    ```
-   gh release list -R microshift-io/microshift --limit 20
+   dnf copr search microshift-nightly
    ```
+   Or browse https://copr.fedorainfracloud.org/coprs/g/microshift-io/microshift-nightly/builds/
 
 2. Check that upstream resources exist:
    - `openshift/api` branch `release-{version}`

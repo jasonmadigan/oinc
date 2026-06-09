@@ -23,24 +23,22 @@ jobs:
         include:
           - version: "4.20"
             okd_version: "4.20.0-okd-scos.16"
-            release_tag: "4.20.0_g153ff0ca9_4.20.0_okd_scos.16"
             arch: amd64
-            rpm_arch: x86_64
           - version: "4.20"
             okd_version: "4.20.0-okd-scos.16"
-            release_tag: "4.20.0_g153ff0ca9_4.20.0_okd_scos.16"
             arch: arm64
-            rpm_arch: aarch64
           - version: "4.21"
             okd_version: "4.21.0-okd-scos.ec.15"
-            release_tag: "4.21.0_g29f429c21_4.21.0_okd_scos.ec.15"
             arch: amd64
-            rpm_arch: x86_64
           - version: "4.21"
             okd_version: "4.21.0-okd-scos.ec.15"
-            release_tag: "4.21.0_g29f429c21_4.21.0_okd_scos.ec.15"
             arch: arm64
-            rpm_arch: aarch64
+          - version: "4.22"
+            okd_version: "4.22.0-okd-scos.ec.16"
+            arch: amd64
+          - version: "4.22"
+            okd_version: "4.22.0-okd-scos.ec.16"
+            arch: arm64
 
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
@@ -56,16 +54,6 @@ jobs:
         if: env.SKIP != 'true'
         uses: actions/checkout@v5
 
-      - name: Download pre-built RPMs
-        if: env.SKIP != 'true'
-        run: |
-          gh release download "${{ matrix.release_tag }}" \
-            -R microshift-io/microshift \
-            -p "microshift-rpms-${{ matrix.rpm_arch }}.tgz" \
-            -D images/
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Install podman
         if: env.SKIP != 'true'
         run: |
@@ -76,7 +64,6 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           sudo podman build \
-            --build-arg RPM_TARBALL="microshift-rpms-${{ matrix.rpm_arch }}.tgz" \
             --build-arg OCP_VERSION="${{ matrix.version }}" \
             --build-arg WITH_OLM=1 \
             -t "${{ env.IMAGE_NAME }}:${{ matrix.okd_version }}-${{ matrix.arch }}" \
