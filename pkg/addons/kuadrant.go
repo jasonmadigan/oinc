@@ -3,12 +3,17 @@ package addons
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"os/exec"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -253,6 +258,8 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
+	waitForAdmissionMapper(ctx, cfg)
+
 	// create the Kuadrant CR to deploy operand components
 	kuadrantGVR := schema.GroupVersionResource{
 		Group: "kuadrant.io", Version: "v1beta1", Resource: "kuadrants",
@@ -275,6 +282,168 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 
 	// wait for the Kuadrant CR to become ready
 	return waitForKuadrantReady(ctx, cfg, 5*time.Minute)
+}
+
+const (
+	admissionProbeUser     = "oinc-admission-probe"
+	admissionProbeInterval = 2 * time.Second
+	admissionProbeTimeout  = 90 * time.Second
+)
+
+var (
+	roleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
+	roleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
+	configMapGVR   = schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+)
+
+// waitForAdmissionMapper blocks until the apiserver's
+// OwnerReferencesPermissionEnforcement plugin can resolve the Kuadrant kind.
+// its RESTMapper only refreshes every 30s, and until it has seen the kuadrant
+// CRD the operator's first ownerref write is rejected and the reconcile is
+// dropped without requeue (kuadrant-operator#1578), so the CR never gets
+// status. probes with impersonated server-side dry-run creates; on timeout
+// logs a warning and proceeds so the gate can never make setup less reliable.
+func waitForAdmissionMapper(ctx context.Context, cfg *Config) {
+	cfg.Logger.Info("waiting for admission RESTMapper to discover kuadrant CRD")
+	start := time.Now()
+
+	role := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1",
+			"kind":       "Role",
+			"metadata": map[string]any{
+				"name":      admissionProbeUser,
+				"namespace": "kuadrant-system",
+			},
+			"rules": []any{
+				map[string]any{
+					"apiGroups": []any{""},
+					"resources": []any{"configmaps"},
+					"verbs":     []any{"create"},
+				},
+				map[string]any{
+					"apiGroups": []any{"kuadrant.io"},
+					"resources": []any{"kuadrants/finalizers"},
+					"verbs":     []any{"update"},
+				},
+			},
+		},
+	}
+
+	binding := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1",
+			"kind":       "RoleBinding",
+			"metadata": map[string]any{
+				"name":      admissionProbeUser,
+				"namespace": "kuadrant-system",
+			},
+			"subjects": []any{
+				map[string]any{
+					"kind":     "User",
+					"name":     admissionProbeUser,
+					"apiGroup": "rbac.authorization.k8s.io",
+				},
+			},
+			"roleRef": map[string]any{
+				"kind":     "Role",
+				"name":     admissionProbeUser,
+				"apiGroup": "rbac.authorization.k8s.io",
+			},
+		},
+	}
+
+	// detached ctx so cleanup still runs if the parent is cancelled
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for _, gvr := range []schema.GroupVersionResource{roleBindingGVR, roleGVR} {
+			err := cfg.DynamicClient.Resource(gvr).Namespace("kuadrant-system").Delete(cleanupCtx, admissionProbeUser, metav1.DeleteOptions{})
+			if err != nil && !errors.IsNotFound(err) {
+				cfg.Logger.Debug("admission probe rbac cleanup", "err", err)
+			}
+		}
+	}()
+
+	if err := ensureResource(ctx, cfg, roleGVR, role); err != nil {
+		cfg.Logger.Warn("admission gate rbac setup failed, skipping gate", "err", err)
+		return
+	}
+	if err := ensureResource(ctx, cfg, roleBindingGVR, binding); err != nil {
+		cfg.Logger.Warn("admission gate rbac setup failed, skipping gate", "err", err)
+		return
+	}
+
+	probeClient, err := admissionProbeClient(cfg.Kubeconfig)
+	if err != nil {
+		cfg.Logger.Warn("admission gate client setup failed, skipping gate", "err", err)
+		return
+	}
+
+	if pollAdmissionProbe(ctx, cfg.Logger, probeClient, admissionProbeInterval, admissionProbeTimeout) {
+		cfg.Logger.Info("admission RESTMapper ready", "waited", time.Since(start).Round(time.Millisecond))
+	} else if ctx.Err() != nil {
+		cfg.Logger.Warn("admission RESTMapper gate cancelled", "waited", time.Since(start).Round(time.Millisecond))
+	} else {
+		cfg.Logger.Warn("admission RESTMapper gate timed out, proceeding", "waited", time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// admissionProbeClient builds a dynamic client impersonating the probe user,
+// so dry-run creates exercise the same authz path as the operator rather than
+// short-circuiting on admin privileges.
+func admissionProbeClient(kubeconfig []byte) (dynamic.Interface, error) {
+	restCfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	restCfg.Impersonate.UserName = admissionProbeUser
+	return dynamic.NewForConfig(restCfg)
+}
+
+// admissionProbeConfigMap returns a configmap owned by a fake Kuadrant with
+// blockOwnerDeletion set: the write shape the admission plugin rejects while
+// its mapper is cold. names are random so a 409 can't mask the result.
+func admissionProbeConfigMap() *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]any{
+				"name":      fmt.Sprintf("%s-%x", admissionProbeUser, rand.Uint64()),
+				"namespace": "kuadrant-system",
+				"ownerReferences": []any{
+					map[string]any{
+						"apiVersion":         "kuadrant.io/v1beta1",
+						"kind":               "Kuadrant",
+						"name":               admissionProbeUser,
+						"uid":                "00000000-0000-0000-0000-000000000000",
+						"controller":         true,
+						"blockOwnerDeletion": true,
+					},
+				},
+			},
+		},
+	}
+}
+
+// pollAdmissionProbe dry-run creates probe configmaps until one is admitted.
+func pollAdmissionProbe(ctx context.Context, logger *slog.Logger, client dynamic.Interface, interval, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return false
+		}
+		_, err := client.Resource(configMapGVR).Namespace("kuadrant-system").Create(ctx, admissionProbeConfigMap(), metav1.CreateOptions{
+			DryRun: []string{metav1.DryRunAll},
+		})
+		if err == nil {
+			return true
+		}
+		logger.Debug("admission probe rejected", "err", err)
+		time.Sleep(interval)
+	}
+	return false
 }
 
 func waitForKuadrantReady(ctx context.Context, cfg *Config, timeout time.Duration) error {
