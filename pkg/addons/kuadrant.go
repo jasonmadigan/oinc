@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -261,10 +262,6 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 	waitForAdmissionMapper(ctx, cfg)
 
 	// create the Kuadrant CR to deploy operand components
-	kuadrantGVR := schema.GroupVersionResource{
-		Group: "kuadrant.io", Version: "v1beta1", Resource: "kuadrants",
-	}
-
 	cr := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "kuadrant.io/v1beta1",
@@ -281,7 +278,7 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 	}
 
 	// wait for the Kuadrant CR to become ready
-	return waitForKuadrantReady(ctx, cfg, 5*time.Minute)
+	return waitForKuadrantReady(ctx, cfg, 5*time.Minute, kuadrantWatchdogAfter, 5*time.Second)
 }
 
 const (
@@ -294,6 +291,7 @@ var (
 	roleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
 	roleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
 	configMapGVR   = schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	kuadrantGVR    = schema.GroupVersionResource{Group: "kuadrant.io", Version: "v1beta1", Resource: "kuadrants"}
 )
 
 // waitForAdmissionMapper blocks until the apiserver's
@@ -446,37 +444,75 @@ func pollAdmissionProbe(ctx context.Context, logger *slog.Logger, client dynamic
 	return false
 }
 
-func waitForKuadrantReady(ctx context.Context, cfg *Config, timeout time.Duration) error {
-	kuadrantGVR := schema.GroupVersionResource{
-		Group: "kuadrant.io", Version: "v1beta1", Resource: "kuadrants",
-	}
+// one-shot operator restart threshold while waiting for the kuadrant CR
+const kuadrantWatchdogAfter = 2 * time.Minute
 
-	deadline := time.Now().Add(timeout)
+func waitForKuadrantReady(ctx context.Context, cfg *Config, timeout, watchdogAfter, interval time.Duration) error {
+	start := time.Now()
+	deadline := start.Add(timeout)
+	watchdogFired := false
+
 	for time.Now().Before(deadline) {
+		var ready bool
+		var why string
 		obj, err := cfg.DynamicClient.Resource(kuadrantGVR).Namespace("kuadrant-system").Get(ctx, "kuadrant", metav1.GetOptions{})
 		if err != nil {
-			cfg.Logger.Debug("waiting for kuadrant CR", "err", err)
-			time.Sleep(5 * time.Second)
+			why = fmt.Sprintf("cannot get kuadrant CR: %v", err)
+		} else {
+			ready, why = kuadrantReadyState(obj)
+		}
+
+		if ready {
+			cfg.Logger.Info("kuadrant ready")
+			return nil
+		}
+
+		// the operator's startup dependency check doesn't re-run; if a
+		// dependency landed after it, the CR wedges at Ready=False until the
+		// pod restarts (kuadrant-operator#1784). restart once and keep
+		// waiting within the same overall timeout.
+		if !watchdogFired && time.Since(start) >= watchdogAfter {
+			watchdogFired = true
+			cfg.Logger.Warn("kuadrant not ready, restarting operator once", "after", time.Since(start).Round(time.Second), "why", why)
+			if err := restartDeployment(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager"); err != nil {
+				cfg.Logger.Warn("operator restart failed", "err", err)
+			} else if err := waitForDeployment(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager", time.Until(deadline)); err != nil {
+				cfg.Logger.Warn("operator not back after restart", "err", err)
+			}
 			continue
 		}
 
-		conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-		if found {
-			for _, c := range conditions {
-				cm, ok := c.(map[string]any)
-				if !ok {
-					continue
-				}
-				if cm["type"] == "Ready" && cm["status"] == "True" {
-					cfg.Logger.Info("kuadrant ready")
-					return nil
-				}
-			}
-		}
-
-		cfg.Logger.Debug("waiting for kuadrant to become ready")
-		time.Sleep(5 * time.Second)
+		cfg.Logger.Debug("waiting for kuadrant to become ready", "why", why)
+		time.Sleep(interval)
 	}
 
 	return fmt.Errorf("kuadrant not ready after %s", timeout)
+}
+
+// kuadrantReadyState reports whether the CR's Ready condition is True, plus a
+// short explanation for logging when it is not.
+func kuadrantReadyState(obj *unstructured.Unstructured) (bool, string) {
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if !found || len(conditions) == 0 {
+		return false, "status empty"
+	}
+	for _, c := range conditions {
+		cm, ok := c.(map[string]any)
+		if !ok || cm["type"] != "Ready" {
+			continue
+		}
+		if cm["status"] == "True" {
+			return true, ""
+		}
+		return false, fmt.Sprintf("reason=%v message=%v", cm["reason"], cm["message"])
+	}
+	return false, "no Ready condition"
+}
+
+// restartDeployment triggers a rolling restart by stamping the pod template,
+// the same mechanism as kubectl rollout restart.
+func restartDeployment(ctx context.Context, cfg *Config, namespace, name string) error {
+	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":%q}}}}}`, time.Now().Format(time.RFC3339))
+	_, err := cfg.DynamicClient.Resource(deploymentGVR).Namespace(namespace).Patch(ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	return err
 }
