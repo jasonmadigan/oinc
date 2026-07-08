@@ -1,7 +1,6 @@
 package addons
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,8 +10,10 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
 	k8stesting "k8s.io/client-go/testing"
@@ -168,26 +169,152 @@ func makeOperatorDeployment() *unstructured.Unstructured {
 		"apiVersion": "apps/v1",
 		"kind":       "Deployment",
 		"metadata":   map[string]any{"name": "kuadrant-operator-controller-manager", "namespace": "kuadrant-system"},
+		"spec":       map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "kuadrant-operator"}}},
 		"status":     map[string]any{"availableReplicas": int64(1)},
 	}}
 }
 
+func makeOperatorPod(name, uid string, running, ready bool) *unstructured.Unstructured {
+	phase := "Pending"
+	if running {
+		phase = "Running"
+	}
+	readyStatus := "False"
+	if ready {
+		readyStatus = "True"
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": "kuadrant-system",
+			"uid":       uid,
+			"labels":    map[string]any{"app": "kuadrant-operator"},
+		},
+		"status": map[string]any{
+			"phase":      phase,
+			"conditions": []any{map[string]any{"type": "Ready", "status": readyStatus}},
+		},
+	}}
+}
+
+func podList(pods ...*unstructured.Unstructured) *unstructured.UnstructuredList {
+	list := &unstructured.UnstructuredList{}
+	for _, p := range pods {
+		list.Items = append(list.Items, *p)
+	}
+	return list
+}
+
 func watchdogFakeClient(objs ...kruntime.Object) *dynamicfake.FakeDynamicClient {
+	// empty scheme keeps seeded pods unstructured; kscheme's typed v1.Pod would
+	// make List attempt a typed conversion and fail.
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
-		kscheme.Scheme,
-		map[schema.GroupVersionResource]string{kuadrantGVR: "KuadrantList"},
+		kruntime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			kuadrantGVR:   "KuadrantList",
+			podGVR:        "PodList",
+			deploymentGVR: "DeploymentList",
+		},
 		objs...,
 	)
 }
 
-func deploymentPatches(client *dynamicfake.FakeDynamicClient) []k8stesting.PatchAction {
-	var patches []k8stesting.PatchAction
+func podDeletes(client *dynamicfake.FakeDynamicClient) []k8stesting.DeleteAction {
+	var deletes []k8stesting.DeleteAction
 	for _, a := range client.Actions() {
-		if a.GetVerb() == "patch" && a.GetResource().Resource == "deployments" {
-			patches = append(patches, a.(k8stesting.PatchAction))
+		if a.GetVerb() == "delete" && a.GetResource().Resource == "pods" {
+			deletes = append(deletes, a.(k8stesting.DeleteAction))
 		}
 	}
-	return patches
+	return deletes
+}
+
+func TestRestartOperatorPod(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deletes pods matching the deployment selector and returns their uids", func(t *testing.T) {
+		old := makeOperatorPod("kuadrant-operator-old", "old-1", true, true)
+		other := makeOperatorPod("unrelated", "other-1", true, true)
+		other.Object["metadata"].(map[string]any)["labels"] = map[string]any{"app": "something-else"}
+		client := watchdogFakeClient(makeOperatorDeployment(), old, other)
+		cfg := &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+		selector, oldUIDs, err := restartOperatorPod(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager")
+		if err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+		if selector.String() != "app=kuadrant-operator" {
+			t.Errorf("selector = %q, want app=kuadrant-operator", selector.String())
+		}
+		if len(oldUIDs) != 1 || !oldUIDs["old-1"] {
+			t.Errorf("oldUIDs = %v, want only old-1", oldUIDs)
+		}
+		deletes := podDeletes(client)
+		if len(deletes) != 1 || deletes[0].GetName() != "kuadrant-operator-old" {
+			t.Fatalf("want only kuadrant-operator-old deleted, got %v", deletes)
+		}
+	})
+
+	t.Run("errors when the deployment has no selector", func(t *testing.T) {
+		dep := makeOperatorDeployment()
+		delete(dep.Object, "spec")
+		client := watchdogFakeClient(dep)
+		cfg := &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		if _, _, err := restartOperatorPod(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager"); err == nil {
+			t.Fatal("want error when matchLabels is absent")
+		}
+	})
+
+	t.Run("errors when no pods match the selector", func(t *testing.T) {
+		client := watchdogFakeClient(makeOperatorDeployment())
+		cfg := &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		if _, _, err := restartOperatorPod(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager"); err == nil {
+			t.Fatal("want error when the selector matches no pods")
+		}
+	})
+}
+
+func TestWaitForNewOperatorPod(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+	selector := labels.SelectorFromSet(map[string]string{"app": "kuadrant-operator"})
+	oldUIDs := map[types.UID]bool{"old-1": true}
+
+	t.Run("detects a new-uid running ready pod", func(t *testing.T) {
+		client := watchdogFakeClient(makeOperatorPod("kuadrant-operator-new", "new-1", true, true))
+		cfg := &Config{DynamicClient: client, Logger: logger}
+		if err := waitForNewOperatorPod(ctx, cfg, "kuadrant-system", selector, oldUIDs, time.Second, time.Millisecond); err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	})
+
+	t.Run("ignores the surviving old pod even when ready", func(t *testing.T) {
+		client := watchdogFakeClient(makeOperatorPod("kuadrant-operator-old", "old-1", true, true))
+		cfg := &Config{DynamicClient: client, Logger: logger}
+		if err := waitForNewOperatorPod(ctx, cfg, "kuadrant-system", selector, oldUIDs, 30*time.Millisecond, time.Millisecond); err == nil {
+			t.Fatal("want timeout, old pod must be ignored")
+		}
+	})
+
+	t.Run("ignores a new pod that is not yet ready", func(t *testing.T) {
+		client := watchdogFakeClient(makeOperatorPod("kuadrant-operator-new", "new-1", true, false))
+		cfg := &Config{DynamicClient: client, Logger: logger}
+		if err := waitForNewOperatorPod(ctx, cfg, "kuadrant-system", selector, oldUIDs, 30*time.Millisecond, time.Millisecond); err == nil {
+			t.Fatal("want timeout while the new pod is not ready")
+		}
+	})
+
+	t.Run("returns when the context is cancelled", func(t *testing.T) {
+		client := watchdogFakeClient(makeOperatorPod("kuadrant-operator-old", "old-1", true, true))
+		cfg := &Config{DynamicClient: client, Logger: logger}
+		cctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := waitForNewOperatorPod(cctx, cfg, "kuadrant-system", selector, oldUIDs, time.Second, time.Millisecond); err == nil {
+			t.Fatal("want error on cancelled context")
+		}
+	})
 }
 
 func TestWaitForKuadrantReadyWatchdog(t *testing.T) {
@@ -200,33 +327,41 @@ func TestWaitForKuadrantReadyWatchdog(t *testing.T) {
 		if err := waitForKuadrantReady(ctx, cfg, time.Second, time.Hour, time.Millisecond); err != nil {
 			t.Fatalf("want nil, got %v", err)
 		}
-		if n := len(deploymentPatches(client)); n != 0 {
+		if n := len(podDeletes(client)); n != 0 {
 			t.Errorf("want no operator restarts, got %d", n)
 		}
 	})
 
 	t.Run("fires once at threshold, never twice", func(t *testing.T) {
-		client := watchdogFakeClient(makeKuadrant(nil), makeOperatorDeployment())
+		client := watchdogFakeClient(makeKuadrant(nil), makeOperatorDeployment(),
+			makeOperatorPod("kuadrant-operator-old", "old-1", true, true))
 		cfg := &Config{DynamicClient: client, Logger: logger}
 		err := waitForKuadrantReady(ctx, cfg, 100*time.Millisecond, 20*time.Millisecond, time.Millisecond)
 		if err == nil {
 			t.Fatal("want timeout error for a CR that never becomes ready")
 		}
-		patches := deploymentPatches(client)
-		if len(patches) != 1 {
-			t.Fatalf("want exactly one operator restart, got %d", len(patches))
+		deletes := podDeletes(client)
+		if len(deletes) != 1 {
+			t.Fatalf("want exactly one operator pod delete, got %d", len(deletes))
 		}
-		if !bytes.Contains(patches[0].GetPatch(), []byte("kubectl.kubernetes.io/restartedAt")) {
-			t.Errorf("restart patch missing restartedAt stamp: %s", patches[0].GetPatch())
+		if deletes[0].GetName() != "kuadrant-operator-old" {
+			t.Errorf("deleted %q, want kuadrant-operator-old", deletes[0].GetName())
 		}
 	})
 
-	t.Run("recovers when the CR turns ready after the restart", func(t *testing.T) {
-		client := watchdogFakeClient(makeOperatorDeployment())
+	t.Run("recovers when a new operator pod comes up after the restart", func(t *testing.T) {
+		client := watchdogFakeClient(makeOperatorDeployment(),
+			makeOperatorPod("kuadrant-operator-old", "old-1", true, true))
 		restarted := false
-		client.PrependReactor("patch", "deployments", func(_ k8stesting.Action) (bool, kruntime.Object, error) {
+		client.PrependReactor("delete", "pods", func(_ k8stesting.Action) (bool, kruntime.Object, error) {
 			restarted = true
 			return false, nil, nil
+		})
+		client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, kruntime.Object, error) {
+			if restarted {
+				return true, podList(makeOperatorPod("kuadrant-operator-new", "new-1", true, true)), nil
+			}
+			return true, podList(makeOperatorPod("kuadrant-operator-old", "old-1", true, true)), nil
 		})
 		client.PrependReactor("get", "kuadrants", func(_ k8stesting.Action) (bool, kruntime.Object, error) {
 			if restarted {
@@ -238,8 +373,8 @@ func TestWaitForKuadrantReadyWatchdog(t *testing.T) {
 		if err := waitForKuadrantReady(ctx, cfg, time.Second, 20*time.Millisecond, time.Millisecond); err != nil {
 			t.Fatalf("want recovery after restart, got %v", err)
 		}
-		if n := len(deploymentPatches(client)); n != 1 {
-			t.Errorf("want exactly one operator restart, got %d", n)
+		if n := len(podDeletes(client)); n != 1 {
+			t.Errorf("want exactly one operator pod delete, got %d", n)
 		}
 	})
 }

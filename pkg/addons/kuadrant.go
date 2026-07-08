@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -292,6 +293,7 @@ var (
 	roleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
 	configMapGVR   = schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	kuadrantGVR    = schema.GroupVersionResource{Group: "kuadrant.io", Version: "v1beta1", Resource: "kuadrants"}
+	podGVR         = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
 )
 
 // waitForAdmissionMapper blocks until the apiserver's
@@ -469,15 +471,16 @@ func waitForKuadrantReady(ctx context.Context, cfg *Config, timeout, watchdogAft
 
 		// the operator's startup dependency check doesn't re-run; if a
 		// dependency landed after it, the CR wedges at Ready=False until the
-		// pod restarts (kuadrant-operator#1784). restart once and keep
-		// waiting within the same overall timeout.
+		// operator process restarts (kuadrant-operator#1784). delete the
+		// operator pod once and keep waiting within the same overall timeout.
 		if !watchdogFired && time.Since(start) >= watchdogAfter {
 			watchdogFired = true
-			cfg.Logger.Warn("kuadrant not ready, restarting operator once", "after", time.Since(start).Round(time.Second), "why", why)
-			if err := restartDeployment(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager"); err != nil {
-				cfg.Logger.Warn("operator restart failed", "err", err)
-			} else if err := waitForDeployment(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager", time.Until(deadline)); err != nil {
-				cfg.Logger.Warn("operator not back after restart", "err", err)
+			cfg.Logger.Warn("kuadrant not ready, restarting operator pod once", "after", time.Since(start).Round(time.Second), "why", why)
+			selector, oldUIDs, err := restartOperatorPod(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager")
+			if err != nil {
+				cfg.Logger.Warn("operator pod restart failed", "err", err)
+			} else if err := waitForNewOperatorPod(ctx, cfg, "kuadrant-system", selector, oldUIDs, time.Until(deadline), interval); err != nil {
+				cfg.Logger.Warn("operator pod not back after restart", "err", err)
 			}
 			continue
 		}
@@ -509,10 +512,87 @@ func kuadrantReadyState(obj *unstructured.Unstructured) (bool, string) {
 	return false, "no Ready condition"
 }
 
-// restartDeployment triggers a rolling restart by stamping the pod template,
-// the same mechanism as kubectl rollout restart.
-func restartDeployment(ctx context.Context, cfg *Config, namespace, name string) error {
-	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":%q}}}}}`, time.Now().Format(time.RFC3339))
-	_, err := cfg.DynamicClient.Resource(deploymentGVR).Namespace(namespace).Patch(ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
-	return err
+// restartOperatorPod deletes the operator pods behind a deployment so the
+// ReplicaSet recreates them with a fresh process. OLM owns CSV-managed operator
+// deployments and reverts out-of-band pod-template edits once the CSV has
+// succeeded, so the kubectl rollout restart stamp never cycles the pod in
+// steady state (kuadrant-operator#1784); deleting the pod does. returns the
+// pods' label selector and UIDs so the caller can wait for a genuinely new pod.
+func restartOperatorPod(ctx context.Context, cfg *Config, namespace, deployment string) (labels.Selector, map[types.UID]bool, error) {
+	dep, err := cfg.DynamicClient.Resource(deploymentGVR).Namespace(namespace).Get(ctx, deployment, metav1.GetOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("get deployment %s/%s: %w", namespace, deployment, err)
+	}
+
+	matchLabels, found, err := unstructured.NestedStringMap(dep.Object, "spec", "selector", "matchLabels")
+	if err != nil || !found || len(matchLabels) == 0 {
+		return nil, nil, fmt.Errorf("deployment %s/%s has no spec.selector.matchLabels", namespace, deployment)
+	}
+	selector := labels.SelectorFromSet(matchLabels)
+
+	pods, err := cfg.DynamicClient.Resource(podGVR).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	if err != nil {
+		return nil, nil, fmt.Errorf("list operator pods: %w", err)
+	}
+	if len(pods.Items) == 0 {
+		return nil, nil, fmt.Errorf("no pods match %s in %s", selector, namespace)
+	}
+
+	oldUIDs := make(map[types.UID]bool, len(pods.Items))
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		oldUIDs[p.GetUID()] = true
+		if err := cfg.DynamicClient.Resource(podGVR).Namespace(namespace).Delete(ctx, p.GetName(), metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+			return nil, nil, fmt.Errorf("delete pod %s: %w", p.GetName(), err)
+		}
+	}
+	return selector, oldUIDs, nil
+}
+
+// waitForNewOperatorPod polls until a pod matching selector, with a UID not in
+// oldUIDs, is Running and Ready. unlike waitForDeployment's availableReplicas>0
+// check, this ignores the surviving old pod during a rolling restart and only
+// returns once the replacement process is genuinely up.
+func waitForNewOperatorPod(ctx context.Context, cfg *Config, namespace string, selector labels.Selector, oldUIDs map[types.UID]bool, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		pods, err := cfg.DynamicClient.Resource(podGVR).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+		if err == nil {
+			for i := range pods.Items {
+				p := &pods.Items[i]
+				if oldUIDs[p.GetUID()] {
+					continue
+				}
+				if podRunningReady(p) {
+					cfg.Logger.Info("operator pod restarted", "namespace", namespace, "pod", p.GetName())
+					return nil
+				}
+			}
+		}
+		time.Sleep(interval)
+	}
+	return fmt.Errorf("no new operator pod ready for %s in %s after %s", selector, namespace, timeout)
+}
+
+// podRunningReady reports whether a pod is in phase Running with Ready=True.
+func podRunningReady(pod *unstructured.Unstructured) bool {
+	phase, _, _ := unstructured.NestedString(pod.Object, "status", "phase")
+	if phase != "Running" {
+		return false
+	}
+	conditions, found, _ := unstructured.NestedSlice(pod.Object, "status", "conditions")
+	if !found {
+		return false
+	}
+	for _, c := range conditions {
+		cm, ok := c.(map[string]any)
+		if !ok || cm["type"] != "Ready" {
+			continue
+		}
+		return cm["status"] == "True"
+	}
+	return false
 }
