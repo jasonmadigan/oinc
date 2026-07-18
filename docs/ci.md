@@ -13,6 +13,18 @@ Builds MicroShift container images. **Manual dispatch only** (`workflow_dispatch
 - Uses podman for builds (not docker)
 - Pushes to `ghcr.io/jasonmadigan/oinc`
 
+### E2E smoke (`.github/workflows/e2e.yml`)
+
+End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurrency-cancelling superseded runs on the same ref. Docs-only changes (`*.md`, `docs/`) skip it.
+
+- Matrix over host runtime: docker and podman (podman leg runs rootful via sudo)
+- Runs `go vet`, `go test`, builds the CLI
+- Creates a cluster with a pinned catalogue version
+- Asserts skopeo is present in the oinc image
+- Asserts `oinc load-image` rejects a ref missing host-side
+- Builds a trivial local image, loads it with `oinc load-image`, runs a pod from it with `imagePullPolicy: IfNotPresent`
+- Re-runs the load to prove idempotence
+
 ### CLI releases (`.github/workflows/release.yml`)
 
 Builds and releases CLI binaries. **Triggered by pushing a `v*` tag.**
@@ -31,7 +43,8 @@ git push origin v0.1.0
 
 - Image workflow needs `packages: write` to push to GHCR
 - Release workflow needs `contents: write` to create releases
-- Both use `${{ github.token }}` (no external secrets)
+- E2E workflow needs `contents: read` only
+- All use `${{ github.token }}` (no external secrets)
 
 ## Runner architecture
 
