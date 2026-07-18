@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/jasonmadigan/oinc/pkg/runtime"
@@ -35,6 +36,25 @@ type Addon interface {
 // Configurable is implemented by addons that accept options (e.g. version).
 type Configurable interface {
 	SetOptions(opts map[string]string)
+}
+
+// Validator is implemented by addons that can check their configuration
+// before any cluster work starts.
+type Validator interface {
+	Validate() error
+}
+
+// Validate runs the Validator hook on each addon, including dependency-pulled
+// ones, so bad config fails before any cluster work.
+func Validate(list []Addon) error {
+	for _, a := range list {
+		if v, ok := a.(Validator); ok {
+			if err := v.Validate(); err != nil {
+				return fmt.Errorf("%s: %w", a.Name(), err)
+			}
+		}
+	}
+	return nil
 }
 
 var registry = map[string]Addon{}
@@ -79,6 +99,12 @@ func Resolve(specs []string) ([]Addon, error) {
 	names := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		name, opts := ParseAddonSpec(spec)
+		if name == "" {
+			return nil, fmt.Errorf("invalid addon spec %q: empty addon name", spec)
+		}
+		if v, ok := opts["version"]; ok && v == "" {
+			return nil, fmt.Errorf("invalid addon spec %q: empty version after @", spec)
+		}
 		names = append(names, name)
 		Configure(name, opts)
 	}
@@ -89,6 +115,7 @@ func Resolve(specs []string) ([]Addon, error) {
 			for k := range registry {
 				avail = append(avail, k)
 			}
+			sort.Strings(avail)
 			return nil, fmt.Errorf("unknown addon %q, available: %v", n, avail)
 		}
 	}

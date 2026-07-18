@@ -2,6 +2,8 @@ package addons
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -334,6 +336,40 @@ func TestRHDHHelmArgsVersion(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("--values count = %d, want 1 without overlay", count)
+	}
+}
+
+func TestRHDHValidate(t *testing.T) {
+	existing := filepath.Join(t.TempDir(), "overlay.yaml")
+	if err := os.WriteFile(existing, []byte("global: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		addon   rhdh
+		wantErr string
+	}{
+		{"no config", rhdh{}, ""},
+		{"values file exists", rhdh{valuesFile: existing}, ""},
+		{"values file missing", rhdh{valuesFile: "/nonexistent/overlay.yaml"}, "/nonexistent/overlay.yaml"},
+		// digest refs are valid: splitImageRef rejoins them losslessly and the
+		// chart renders repository:tag back to the exact original ref
+		{"digest image passes", rhdh{image: "quay.io/x/y@sha256:abc"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.addon.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

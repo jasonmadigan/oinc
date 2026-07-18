@@ -35,6 +35,32 @@ type CreateOpts struct {
 	Addons          string
 }
 
+// resolveAddons splits a comma-separated addon list, resolves dependency
+// order and runs each addon's validation hook.
+func resolveAddons(addonList string) ([]addons.Addon, error) {
+	names := strings.Split(addonList, ",")
+	for i := range names {
+		names[i] = strings.TrimSpace(names[i])
+	}
+
+	sorted, err := addons.Resolve(names)
+	if err != nil {
+		return nil, err
+	}
+	if err := addons.Validate(sorted); err != nil {
+		return nil, err
+	}
+
+	return sorted, nil
+}
+
+// PreflightAddons validates an addon list before any container work, so bad
+// input fails in seconds rather than minutes into a create.
+func PreflightAddons(addonList string) error {
+	_, err := resolveAddons(addonList)
+	return err
+}
+
 // CreateSteps returns the create flow as discrete steps for the TUI.
 func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 	var (
@@ -43,8 +69,15 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 		raw []byte
 	)
 
-	steps := []*tui.Step{
-		{Name: "resolving version", Run: func() error {
+	var steps []*tui.Step
+	if opts.Addons != "" {
+		steps = append(steps, &tui.Step{Name: "validating addons", Run: func() error {
+			return PreflightAddons(opts.Addons)
+		}})
+	}
+
+	steps = append(steps,
+		&tui.Step{Name: "resolving version", Run: func() error {
 			v, err := version.Resolve(opts.Version)
 			if err != nil {
 				return err
@@ -52,7 +85,7 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 			ver = v
 			return nil
 		}},
-		{Name: "detecting runtime", Run: func() error {
+		&tui.Step{Name: "detecting runtime", Run: func() error {
 			r, err := runtime.Detect(opts.RuntimeOverride)
 			if err != nil {
 				return err
@@ -60,10 +93,10 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 			rt = r
 			return nil
 		}},
-		{Name: "pulling image", Run: func() error {
+		&tui.Step{Name: "pulling image", Run: func() error {
 			return rt.PullImage(ver.MicroShiftImage(), ver.Platform())
 		}},
-		{Name: "creating container", Run: func() error {
+		&tui.Step{Name: "creating container", Run: func() error {
 			if rt.ContainerExists(containerName) {
 				return rt.StartContainer(containerName)
 			}
@@ -85,10 +118,10 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 			}
 			return rt.StartContainer(containerName)
 		}},
-		{Name: "waiting for microshift", Run: func() error {
+		&tui.Step{Name: "waiting for microshift", Run: func() error {
 			return rt.WaitForService(containerName, "microshift", 120, 5*time.Second)
 		}},
-		{Name: "merging kubeconfig", Run: func() error {
+		&tui.Step{Name: "merging kubeconfig", Run: func() error {
 			kcPath := fmt.Sprintf("%s/%s/kubeconfig", kubeconfigDir, hostname)
 			kc, err := rt.CopyFromContainer(containerName, kcPath)
 			if err != nil {
@@ -97,14 +130,14 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 			raw = kc
 			return kubeconfig.Update(raw)
 		}},
-		{Name: "waiting for pods", Run: func() error {
+		&tui.Step{Name: "waiting for pods", Run: func() error {
 			return cluster.WaitForReady(ctx, raw, 60, 5*time.Second)
 		}},
-		{Name: "setting up console", Run: func() error {
+		&tui.Step{Name: "setting up console", Run: func() error {
 			logger := slog.New(slog.NewTextHandler(devNull{}, nil))
 			return setupConsole(rt, raw, ver, opts.ConsolePort, opts.ConsolePlugin, logger)
 		}},
-	}
+	)
 
 	if opts.Addons != "" {
 		steps = append(steps, &tui.Step{
@@ -139,6 +172,13 @@ func Create(ctx context.Context, opts CreateOpts, logger *slog.Logger) error {
 
 // createPlain is the original slog-based create for non-TTY contexts.
 func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) error {
+	if opts.Addons != "" {
+		logger.Info("validating addons", "addons", opts.Addons)
+		if err := PreflightAddons(opts.Addons); err != nil {
+			return fmt.Errorf("addon pre-flight: %w", err)
+		}
+	}
+
 	ver, err := version.Resolve(opts.Version)
 	if err != nil {
 		return err
@@ -240,12 +280,7 @@ func ingressHTTPPort(rt *runtime.Runtime) (int, error) {
 }
 
 func InstallAddons(ctx context.Context, addonList string, kubeconfig []byte, rt *runtime.Runtime, logger *slog.Logger) error {
-	names := strings.Split(addonList, ",")
-	for i := range names {
-		names[i] = strings.TrimSpace(names[i])
-	}
-
-	sorted, err := addons.Resolve(names)
+	sorted, err := resolveAddons(addonList)
 	if err != nil {
 		return err
 	}
@@ -295,12 +330,7 @@ func InstallAddons(ctx context.Context, addonList string, kubeconfig []byte, rt 
 // AddonInstallSteps returns the addon install flow as discrete steps for the TUI.
 // Already-installed addons (detected via status) are skipped.
 func AddonInstallSteps(ctx context.Context, addonList string, kc []byte, rt *runtime.Runtime, runtimeOverride string) ([]*tui.Step, error) {
-	names := strings.Split(addonList, ",")
-	for i := range names {
-		names[i] = strings.TrimSpace(names[i])
-	}
-
-	sorted, err := addons.Resolve(names)
+	sorted, err := resolveAddons(addonList)
 	if err != nil {
 		return nil, err
 	}

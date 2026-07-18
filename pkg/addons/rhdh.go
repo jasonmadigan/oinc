@@ -48,6 +48,16 @@ func (r *rhdh) SetOptions(opts map[string]string) {
 	}
 }
 
+// Validate checks flag-provided config before any cluster work.
+func (r *rhdh) Validate() error {
+	if r.valuesFile != "" {
+		if _, err := os.Stat(r.valuesFile); err != nil {
+			return fmt.Errorf("values overlay: %w", err)
+		}
+	}
+	return nil
+}
+
 func (r *rhdh) resolveVersion() string {
 	if r.version != "" {
 		return r.version

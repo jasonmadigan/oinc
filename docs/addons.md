@@ -92,6 +92,12 @@ Dependencies are declared per-addon and resolved via topological sort (Kahn's al
        SetOptions(opts map[string]string)
    }
    ```
+   and `Validator` for pre-flight config checks, run at the start of `create` (before any container work) and before `addon install`:
+   ```go
+   type Validator interface {
+       Validate() error
+   }
+   ```
 4. Register in `init()`: `func init() { Register(&myAddon{}) }`
 5. Add detection in `pkg/oinc/status.go` `addonChecks` for status display
 

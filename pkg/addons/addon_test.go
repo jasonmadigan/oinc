@@ -2,6 +2,8 @@ package addons
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +60,18 @@ func TestResolve(t *testing.T) {
 		{
 			"unknown addon",
 			[]string{"nonexistent"},
+			nil,
+			true,
+		},
+		{
+			"empty version after @",
+			[]string{"cert-manager@"},
+			nil,
+			true,
+		},
+		{
+			"empty addon name",
+			[]string{"@1.16.0"},
 			nil,
 			true,
 		},
@@ -118,6 +132,39 @@ func TestResolveCycleDetection(t *testing.T) {
 	}
 }
 
+// a broken config on an addon pulled in as a dependency must fail validation
+// even when only the parent was requested.
+func TestValidateDependencyPulled(t *testing.T) {
+	orig := make(map[string]Addon, len(registry))
+	for k, v := range registry {
+		orig[k] = v
+	}
+	defer func() {
+		registry = orig
+	}()
+
+	registry = map[string]Addon{}
+	Register(&fakeValidatingAddon{
+		fakeAddon:   fakeAddon{name: "child"},
+		validateErr: errors.New("bad child config"),
+	})
+	Register(&fakeAddon{name: "parent", deps: []string{"child"}})
+
+	sorted, err := Resolve([]string{"parent"})
+	if err != nil {
+		t.Fatalf("Resolve(parent) = %v", err)
+	}
+	err = Validate(sorted)
+	if err == nil {
+		t.Fatal("Validate = nil, want child config error")
+	}
+	for _, want := range []string{"child", "bad child config"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want mention of %q", err, want)
+		}
+	}
+}
+
 func TestConfigure(t *testing.T) {
 	orig := make(map[string]Addon, len(registry))
 	for k, v := range registry {
@@ -157,3 +204,10 @@ type fakeConfigurableAddon struct {
 }
 
 func (f *fakeConfigurableAddon) SetOptions(opts map[string]string) { f.opts = opts }
+
+type fakeValidatingAddon struct {
+	fakeAddon
+	validateErr error
+}
+
+func (f *fakeValidatingAddon) Validate() error { return f.validateErr }

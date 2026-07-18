@@ -272,6 +272,20 @@ func main() {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := newLogger(flagLogLevel)
+			applyRHDHFlags()
+
+			addonArg := ""
+			if len(args) > 0 {
+				addonArg = args[0]
+			}
+
+			// pre-flight before touching the runtime, so a down daemon
+			// still reports bad addon config first
+			if addonArg != "" {
+				if err := oinc.PreflightAddons(addonArg); err != nil {
+					return err
+				}
+			}
 
 			rt, err := runtime.Detect(flagRuntime)
 			if err != nil {
@@ -281,11 +295,6 @@ func main() {
 			kc, err := kubeconfig.Read()
 			if err != nil {
 				return fmt.Errorf("reading kubeconfig: %w", err)
-			}
-
-			addonArg := ""
-			if len(args) > 0 {
-				addonArg = args[0]
 			}
 
 			// no args + TTY: interactive picker
@@ -303,8 +312,6 @@ func main() {
 			if addonArg == "" {
 				return fmt.Errorf("specify addons to install, or run interactively in a terminal")
 			}
-
-			applyRHDHFlags()
 
 			if tui.IsTTY() {
 				steps, err := oinc.AddonInstallSteps(cmd.Context(), addonArg, kc, rt, flagRuntime)
