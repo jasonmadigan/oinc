@@ -20,24 +20,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # each version sets release_tag + per-arch tarball_sha256 (github release tarball)
+        # or copr_pin (pinned copr VR)
         include:
           - version: "4.20"
             okd_version: "4.20.0-okd-scos.16"
+            release_tag: "4.20.0_g153ff0ca9_4.20.0_okd_scos.16"
+            tarball_sha256: "536d308167124ab38c93f0c5a2cf3f57c63bb759dcb3412578a6e860388d32d2"
             arch: amd64
           - version: "4.20"
             okd_version: "4.20.0-okd-scos.16"
+            release_tag: "4.20.0_g153ff0ca9_4.20.0_okd_scos.16"
+            tarball_sha256: "32ef8025e75dfd5c380ec3212ab8ab796353f3a86656b6232686819505575d69"
             arch: arm64
           - version: "4.21"
             okd_version: "4.21.0-okd-scos.ec.15"
+            release_tag: "4.21.0_g29f429c21_4.21.0_okd_scos.ec.15"
+            tarball_sha256: "c68935775594ed5df43782aa5fcde64a0dac72f31ab348996d3428130040718b"
             arch: amd64
           - version: "4.21"
             okd_version: "4.21.0-okd-scos.ec.15"
+            release_tag: "4.21.0_g29f429c21_4.21.0_okd_scos.ec.15"
+            tarball_sha256: "59ffadaf26121cd6829050ab9c6d5de09681fe973e7fd4fcf0ce2ed965a47a95"
             arch: arm64
           - version: "4.22"
             okd_version: "4.22.0-okd-scos.ec.16"
+            copr_pin: "5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9"
             arch: amd64
           - version: "4.22"
             okd_version: "4.22.0-okd-scos.ec.16"
+            copr_pin: "5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9"
             arch: arm64
 
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
@@ -65,6 +77,10 @@ jobs:
         run: |
           sudo podman build \
             --build-arg OCP_VERSION="${{ matrix.version }}" \
+            --build-arg OKD_VERSION="${{ matrix.okd_version }}" \
+            --build-arg RELEASE_TAG="${{ matrix.release_tag }}" \
+            --build-arg TARBALL_SHA256="${{ matrix.tarball_sha256 }}" \
+            --build-arg COPR_PIN="${{ matrix.copr_pin }}" \
             --build-arg WITH_OLM=1 \
             -t "${{ env.IMAGE_NAME }}:${{ matrix.okd_version }}-${{ matrix.arch }}" \
             -f images/Containerfile images/
