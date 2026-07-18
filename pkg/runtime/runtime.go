@@ -12,7 +12,6 @@ import (
 
 type Runtime struct {
 	binary string
-	sudo   bool
 }
 
 // Detect finds an available container runtime. If override is non-empty, use that.
@@ -28,6 +27,43 @@ func Detect(override string) (*Runtime, error) {
 		return newRuntime("podman")
 	}
 	return nil, fmt.Errorf("no container runtime found (need docker or podman)")
+}
+
+// DetectOwner finds the runtime that owns the named container. Unlike Detect,
+// it probes every installed runtime, so on a host with both the pick matches
+// wherever the container actually lives rather than the global probe order.
+func DetectOwner(override, container string) (*Runtime, error) {
+	if override != "" {
+		r, err := newRuntime(override)
+		if err != nil {
+			return nil, err
+		}
+		if !r.ContainerExists(container) {
+			return nil, fmt.Errorf("container %q not found in %s", container, override)
+		}
+		return r, nil
+	}
+	// no validate(): the container already exists under the picked runtime,
+	// create-time checks do not apply
+	var candidates []*Runtime
+	for _, binary := range []string{"docker", "podman"} {
+		if _, err := exec.LookPath(binary); err == nil {
+			candidates = append(candidates, &Runtime{binary: binary})
+		}
+	}
+	// prefer a running container: a stale stopped one under another runtime
+	// must not shadow the live cluster
+	for _, r := range candidates {
+		if r.ContainerRunning(container) {
+			return r, nil
+		}
+	}
+	for _, r := range candidates {
+		if r.ContainerExists(container) {
+			return r, nil
+		}
+	}
+	return nil, fmt.Errorf("container %q not found in docker or podman (is the cluster running?)", container)
 }
 
 func newRuntime(binary string) (*Runtime, error) {
@@ -149,17 +185,15 @@ func (r *Runtime) runtimeInfo() (*runtimeInfo, error) {
 	return info, nil
 }
 
+// command builds an exec.Cmd for the runtime binary.
+func (r *Runtime) command(args ...string) *exec.Cmd {
+	return exec.Command(r.binary, args...)
+}
+
 // run executes the container runtime binary with the given args.
 func (r *Runtime) run(args ...string) ([]byte, error) {
-	name := r.binary
-	cmdArgs := args
-	if r.sudo {
-		name = "sudo"
-		cmdArgs = append([]string{r.binary}, args...)
-	}
-
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(name, cmdArgs...)
+	cmd := r.command(args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 

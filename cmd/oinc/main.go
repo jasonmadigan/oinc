@@ -303,7 +303,17 @@ func main() {
 	}
 	kubeconfigCmd.Flags().BoolVarP(&flagKubeconfigPrint, "print", "p", false, "print raw kubeconfig to stdout")
 
-	root.AddCommand(createCmd, deleteCmd, statusCmd, versionCmd, switchCmd, addonCmd, kubeconfigCmd)
+	loadImageCmd := &cobra.Command{
+		Use:   "load-image <image>",
+		Short: "Load a local image into the cluster",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := newLogger(flagLogLevel)
+			return oinc.LoadImage(flagRuntime, args[0], logger)
+		},
+	}
+
+	root.AddCommand(createCmd, deleteCmd, statusCmd, versionCmd, switchCmd, addonCmd, kubeconfigCmd, loadImageCmd)
 
 	// suppress usage on RunE errors -- the TUI already shows what went wrong
 	root.SilenceUsage = true
