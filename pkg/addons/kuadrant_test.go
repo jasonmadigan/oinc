@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
@@ -377,4 +378,112 @@ func TestWaitForKuadrantReadyWatchdog(t *testing.T) {
 			t.Errorf("want exactly one operator pod delete, got %d", n)
 		}
 	})
+}
+
+// defaults unchanged: without the option the CR must stay metadata-only,
+// byte-identical to what previous releases created.
+func TestKuadrantCR(t *testing.T) {
+	bare := (&kuadrant{}).kuadrantCR()
+	if _, found, _ := unstructured.NestedMap(bare.Object, "spec"); found {
+		t.Errorf("bare CR must carry no spec, got %v", bare.Object["spec"])
+	}
+
+	portal := (&kuadrant{devportal: true}).kuadrantCR()
+	enabled, found, _ := unstructured.NestedBool(portal.Object, "spec", "components", "developerPortal", "enabled")
+	if !found || !enabled {
+		t.Errorf("devportal CR spec = %v, want components.developerPortal.enabled true", portal.Object["spec"])
+	}
+}
+
+func bareKuadrantCR() *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "kuadrant.io/v1beta1",
+			"kind":       "Kuadrant",
+			"metadata": map[string]any{
+				"name":      "kuadrant",
+				"namespace": "kuadrant-system",
+			},
+		},
+	}
+}
+
+func devportalConfig(t *testing.T, client *dynamicfake.FakeDynamicClient) *Config {
+	t.Helper()
+	if _, err := client.Resource(kuadrantGVR).Namespace("kuadrant-system").Create(context.Background(), bareKuadrantCR(), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seeding kuadrant CR: %v", err)
+	}
+	return &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+// an existing bare CR (idempotent re-install) must be patched, and the patch
+// verified against a fresh read.
+func TestEnsureDevportalPatchesExistingCR(t *testing.T) {
+	client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+	cfg := devportalConfig(t, client)
+
+	for range 2 { // second call must be a no-op
+		if err := ensureDevportal(context.Background(), cfg); err != nil {
+			t.Fatalf("ensureDevportal: %v", err)
+		}
+	}
+
+	obj, err := client.Resource(kuadrantGVR).Namespace("kuadrant-system").Get(context.Background(), "kuadrant", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !devportalEnabled(obj) {
+		t.Errorf("CR spec = %v, want developerPortal enabled", obj.Object["spec"])
+	}
+}
+
+// structural CRD pruning drops unknown fields while the write still reports
+// success; a kuadrant version that predates the portal field must fail loud,
+// not silently install without the portal.
+func TestEnsureDevportalFailsLoudWhenPruned(t *testing.T) {
+	client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+	cfg := devportalConfig(t, client)
+
+	// simulate pruning: the patch "succeeds" but the stored CR never changes
+	client.PrependReactor("patch", "kuadrants", func(k8stesting.Action) (bool, kruntime.Object, error) {
+		return true, bareKuadrantCR(), nil
+	})
+
+	err := ensureDevportal(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when the field does not persist")
+	}
+	if !strings.Contains(err.Error(), "developerPortal") {
+		t.Errorf("error %q should name the dropped field", err)
+	}
+}
+
+// the merge patch must only add the portal field: unrelated spec the user
+// already set on the CR has to survive.
+func TestEnsureDevportalPreservesExistingSpec(t *testing.T) {
+	cr := bareKuadrantCR()
+	cr.Object["spec"] = map[string]any{
+		"observability": map[string]any{"enable": true},
+	}
+	client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+	if _, err := client.Resource(kuadrantGVR).Namespace("kuadrant-system").Create(context.Background(), cr, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seeding kuadrant CR: %v", err)
+	}
+	cfg := &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	if err := ensureDevportal(context.Background(), cfg); err != nil {
+		t.Fatalf("ensureDevportal: %v", err)
+	}
+
+	obj, err := client.Resource(kuadrantGVR).Namespace("kuadrant-system").Get(context.Background(), "kuadrant", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !devportalEnabled(obj) {
+		t.Errorf("CR spec = %v, want developerPortal enabled", obj.Object["spec"])
+	}
+	kept, found, _ := unstructured.NestedBool(obj.Object, "spec", "observability", "enable")
+	if !found || !kept {
+		t.Errorf("CR spec = %v, pre-existing observability field must survive the patch", obj.Object["spec"])
+	}
 }
