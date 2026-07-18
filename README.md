@@ -123,6 +123,7 @@ The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons
 | `metallb` | LoadBalancer IP allocation | upstream manifests (kubectl) |
 | `istio` | Istio service mesh via Sail operator | helm |
 | `kuadrant` | API management (rate limiting, auth, DNS) | helm |
+| `rhdh` | Red Hat Developer Hub (Backstage) | helm |
 
 Dependencies are resolved automatically. Installing `kuadrant` will pull in `gateway-api`, `cert-manager`, `metallb`, and `istio`.
 
@@ -143,6 +144,25 @@ Pin addon versions with `@`:
 ```bash
 oinc addon install cert-manager@1.16.0
 ```
+
+### RHDH
+
+The `rhdh` addon installs Red Hat Developer Hub with guest auth enabled and exposes it via a Route on the ingress HTTP port. With default ports it is reachable at `http://rhdh.127.0.0.1.nip.io:9080` (no port-forward needed).
+
+```bash
+oinc create --addons rhdh
+
+# pin the chart version (rhdh@latest follows the chart index)
+oinc create --addons rhdh@6.2.2
+
+# custom image (e.g. sideloaded via oinc load-image), values overlay, quickstart off
+oinc create --addons rhdh \
+  --rhdh-image localhost/my-rhdh:dev \
+  --rhdh-values overlay.yaml \
+  --rhdh-disable-quickstart
+```
+
+`--rhdh-values` merges a helm values overlay into the chart install, for dynamic-plugins config and app-config extras. See [docs/addons.md](docs/addons.md) for the full option reference and the MicroShift-specific overrides the addon applies.
 
 ## Kubeconfig
 
@@ -185,7 +205,7 @@ The ref is preserved exactly, so `localhost/<name>:<tag>` refs resolve as given.
 - ~4GB RAM available for the container
 - `curl` (for fetching upstream manifests and CRDs)
 - `kubectl` (for cert-manager and metallb addons)
-- `helm` (for istio and kuadrant addons)
+- `helm` (for istio, kuadrant and rhdh addons)
 
 ## Acknowledgements
 

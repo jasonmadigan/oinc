@@ -25,6 +25,8 @@ End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurre
 - Builds a trivial local image, loads it with `oinc load-image`, runs a pod from it with `imagePullPolicy: IfNotPresent`
 - Re-runs the load to prove idempotence
 
+A separate `rhdh` job (single leg: docker, pinned version, since rhdh + postgres + microshift is memory-heavy) creates a cluster with the rhdh addon, waits for the rollout, then asserts the Route serves the app and guest auth issues a token.
+
 ### CLI releases (`.github/workflows/release.yml`)
 
 Builds and releases CLI binaries. **Triggered by pushing a `v*` tag.**

@@ -103,6 +103,7 @@ var addonChecks = []addonCheck{
 	{"metallb", "metallb-system", "controller"},
 	{"istio", "istio-system", "istiod"},
 	{"kuadrant", "kuadrant-system", "kuadrant-operator-controller-manager"},
+	{"rhdh", "rhdh", "rhdh-developer-hub"},
 }
 
 func detectAddons() []AddonInfo {

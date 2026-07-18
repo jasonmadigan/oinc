@@ -89,3 +89,48 @@ jobs:
           "$PREFIX" "$CR" exec oinc crictl images || true
           "$PREFIX" kubectl --context oinc get pods -A || true
           "$PREFIX" kubectl --context oinc describe pod e2e-smoke || true
+
+  # rhdh + postgres + microshift is memory-heavy, so this runs as its own
+  # single leg (docker, pinned version) rather than in the smoke matrix
+  rhdh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RHDH_URL: http://rhdh.127.0.0.1.nip.io:9080
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      - name: Create cluster with rhdh addon
+        run: bin/oinc create --version 4.22 --runtime docker --addons rhdh
+
+      - name: Wait for rhdh rollout
+        run: |
+          kubectl --context oinc -n rhdh rollout status deploy/rhdh-developer-hub --timeout=300s
+          kubectl --context oinc -n rhdh wait pod -l app.kubernetes.io/component=backstage --for=condition=Ready --timeout=300s
+
+      - name: Assert the Route serves the app
+        run: curl -sSf --retry 10 --retry-delay 5 --retry-all-errors "$RHDH_URL" | grep -qi "Red Hat Developer Hub"
+
+      - name: Assert guest auth responds
+        run: |
+          curl -sSf -H 'X-Requested-With: XMLHttpRequest' "$RHDH_URL/api/auth/guest/refresh" | grep -q '"token"'
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker logs oinc --tail 100 || true
+          kubectl --context oinc get pods -A || true
+          kubectl --context oinc -n rhdh get deploy,pods,routes,svc || true
+          kubectl --context oinc -n rhdh describe pod -l app.kubernetes.io/component=backstage || true
+          kubectl --context oinc -n rhdh logs deploy/rhdh-developer-hub --all-containers --tail 100 || true
+          curl -sv "$RHDH_URL" || true

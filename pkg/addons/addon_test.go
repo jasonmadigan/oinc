@@ -118,6 +118,29 @@ func TestResolveCycleDetection(t *testing.T) {
 	}
 }
 
+func TestConfigure(t *testing.T) {
+	orig := make(map[string]Addon, len(registry))
+	for k, v := range registry {
+		orig[k] = v
+	}
+	defer func() {
+		registry = orig
+	}()
+
+	registry = map[string]Addon{}
+	fake := &fakeConfigurableAddon{fakeAddon: fakeAddon{name: "cfg"}}
+	Register(fake)
+
+	Configure("cfg", map[string]string{"image": "localhost/x:y"})
+	if fake.opts["image"] != "localhost/x:y" {
+		t.Errorf("opts = %v, want image set", fake.opts)
+	}
+
+	// unknown addons and empty opts are no-ops
+	Configure("missing", map[string]string{"a": "b"})
+	Configure("cfg", nil)
+}
+
 type fakeAddon struct {
 	name string
 	deps []string
@@ -127,3 +150,10 @@ func (f *fakeAddon) Name() string                               { return f.name 
 func (f *fakeAddon) Dependencies() []string                     { return f.deps }
 func (f *fakeAddon) Install(_ context.Context, _ *Config) error { return nil }
 func (f *fakeAddon) Ready(_ context.Context, _ *Config) error   { return nil }
+
+type fakeConfigurableAddon struct {
+	fakeAddon
+	opts map[string]string
+}
+
+func (f *fakeConfigurableAddon) SetOptions(opts map[string]string) { f.opts = opts }

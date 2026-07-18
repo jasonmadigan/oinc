@@ -226,6 +226,19 @@ type devNull struct{}
 
 func (devNull) Write(p []byte) (int, error) { return len(p), nil }
 
+// ingressHTTPPort returns the host port mapped to the cluster container's
+// port 80. 0 with a non-nil error when it cannot be determined.
+func ingressHTTPPort(rt *runtime.Runtime) (int, error) {
+	info, err := rt.InspectContainer(containerName)
+	if err != nil {
+		return 0, fmt.Errorf("inspecting %s container: %w", containerName, err)
+	}
+	if info.Ports[80] == 0 {
+		return 0, fmt.Errorf("%s container has no host port mapped to port 80", containerName)
+	}
+	return info.Ports[80], nil
+}
+
 func InstallAddons(ctx context.Context, addonList string, kubeconfig []byte, rt *runtime.Runtime, logger *slog.Logger) error {
 	names := strings.Split(addonList, ",")
 	for i := range names {
@@ -252,12 +265,16 @@ func InstallAddons(ctx context.Context, addonList string, kubeconfig []byte, rt 
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
+	ingressPort, ingressErr := ingressHTTPPort(rt)
 	cfg := &addons.Config{
-		Kubeconfig:    kubeconfig,
-		DynamicClient: dynClient,
-		Clientset:     clientset,
-		Runtime:       rt,
-		Logger:        logger,
+		Kubeconfig:      kubeconfig,
+		DynamicClient:   dynClient,
+		Clientset:       clientset,
+		Runtime:         rt,
+		Logger:          logger,
+		IngressHost:     hostname,
+		IngressHTTPPort: ingressPort,
+		IngressErr:      ingressErr,
 	}
 
 	for _, a := range sorted {
@@ -313,12 +330,16 @@ func AddonInstallSteps(ctx context.Context, addonList string, kc []byte, rt *run
 	}
 
 	logger := slog.New(slog.NewTextHandler(devNull{}, nil))
+	ingressPort, ingressErr := ingressHTTPPort(rt)
 	cfg := &addons.Config{
-		Kubeconfig:    kc,
-		DynamicClient: dynClient,
-		Clientset:     clientset,
-		Runtime:       rt,
-		Logger:        logger,
+		Kubeconfig:      kc,
+		DynamicClient:   dynClient,
+		Clientset:       clientset,
+		Runtime:         rt,
+		Logger:          logger,
+		IngressHost:     hostname,
+		IngressHTTPPort: ingressPort,
+		IngressErr:      ingressErr,
 	}
 
 	var steps []*tui.Step

@@ -32,7 +32,33 @@ var (
 	flagOutput          string
 	flagKubeconfigPrint bool
 	flagWatch           bool
+
+	flagRHDHImage             string
+	flagRHDHValues            string
+	flagRHDHDisableQuickstart bool
 )
+
+// applyRHDHFlags forwards rhdh addon flags to the addon registry.
+func applyRHDHFlags() {
+	opts := map[string]string{}
+	if flagRHDHImage != "" {
+		opts["image"] = flagRHDHImage
+	}
+	if flagRHDHValues != "" {
+		opts["values"] = flagRHDHValues
+	}
+	if flagRHDHDisableQuickstart {
+		opts["disable-quickstart"] = "true"
+	}
+	addons.Configure("rhdh", opts)
+}
+
+// addRHDHFlags registers the rhdh addon flags on a command.
+func addRHDHFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&flagRHDHImage, "rhdh-image", "", "rhdh addon: custom image (repository:tag), e.g. a localhost/ ref loaded via load-image")
+	cmd.Flags().StringVar(&flagRHDHValues, "rhdh-values", "", "rhdh addon: path to a helm values overlay merged into the chart install")
+	cmd.Flags().BoolVar(&flagRHDHDisableQuickstart, "rhdh-disable-quickstart", false, "rhdh addon: disable the quickstart onboarding plugin")
+}
 
 var buildVersion = "dev"
 
@@ -78,6 +104,8 @@ func main() {
 				flagVersion = picked
 			}
 
+			applyRHDHFlags()
+
 			return oinc.Create(cmd.Context(), oinc.CreateOpts{
 				Version:         flagVersion,
 				RuntimeOverride: flagRuntime,
@@ -95,6 +123,7 @@ func main() {
 	createCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
 	createCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring (name=url)")
 	createCmd.Flags().StringVar(&flagAddons, "addons", "", "comma-separated addons to install")
+	addRHDHFlags(createCmd)
 
 	var flagForce bool
 	deleteCmd := &cobra.Command{
@@ -275,6 +304,8 @@ func main() {
 				return fmt.Errorf("specify addons to install, or run interactively in a terminal")
 			}
 
+			applyRHDHFlags()
+
 			if tui.IsTTY() {
 				steps, err := oinc.AddonInstallSteps(cmd.Context(), addonArg, kc, rt, flagRuntime)
 				if err != nil {
@@ -290,6 +321,8 @@ func main() {
 			return oinc.InstallAddons(cmd.Context(), addonArg, kc, rt, logger)
 		},
 	}
+
+	addRHDHFlags(addonInstallCmd)
 
 	addonCmd.AddCommand(addonListCmd, addonInstallCmd)
 

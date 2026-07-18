@@ -17,6 +17,12 @@ type Config struct {
 	Clientset     kubernetes.Interface
 	Runtime       *runtime.Runtime
 	Logger        *slog.Logger
+	// cluster ingress hostname and the host port mapped to container port 80,
+	// for addons that expose Routes on the ports oinc already maps.
+	// IngressErr carries the cause when the port could not be determined.
+	IngressHost     string
+	IngressHTTPPort int
+	IngressErr      error
 }
 
 type Addon interface {
@@ -42,6 +48,19 @@ func Get(name string) (Addon, bool) {
 
 func All() map[string]Addon { return registry }
 
+// Configure applies options to a registered addon ahead of Resolve.
+// No-op for unknown or non-configurable addons.
+func Configure(name string, opts map[string]string) {
+	if len(opts) == 0 {
+		return
+	}
+	if a, ok := registry[name]; ok {
+		if c, ok := a.(Configurable); ok {
+			c.SetOptions(opts)
+		}
+	}
+}
+
 // ParseAddonSpec splits "name@version" into name + options.
 // e.g. "cert-manager@1.16.0" -> "cert-manager", {"version":"1.16.0"}
 func ParseAddonSpec(spec string) (string, map[string]string) {
@@ -61,11 +80,7 @@ func Resolve(specs []string) ([]Addon, error) {
 	for _, spec := range specs {
 		name, opts := ParseAddonSpec(spec)
 		names = append(names, name)
-		if a, ok := registry[name]; ok {
-			if c, ok := a.(Configurable); ok && len(opts) > 0 {
-				c.SetOptions(opts)
-			}
-		}
+		Configure(name, opts)
 	}
 
 	for _, n := range names {
