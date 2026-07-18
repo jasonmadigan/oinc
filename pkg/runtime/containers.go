@@ -1,10 +1,15 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -122,6 +127,71 @@ func (r *Runtime) ContainerRunning(name string) bool {
 func (r *Runtime) ExecInContainer(container string, args ...string) ([]byte, error) {
 	cmdArgs := append([]string{"exec", container}, args...)
 	return r.run(cmdArgs...)
+}
+
+func (r *Runtime) ImageExists(image string) bool {
+	_, err := r.run("image", "inspect", image)
+	return err == nil
+}
+
+// StreamImageToContainer pipes `save <image>` into `exec -i <container> <args...>`.
+// Both ends' exit statuses are checked; a failed save is reported first so it
+// does not surface as a confusing error from the consuming command.
+func (r *Runtime) StreamImageToContainer(image, container string, execArgs ...string) error {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+
+	save := r.command("save", image)
+	save.Stdout = pw
+	var saveStderr bytes.Buffer
+	save.Stderr = &saveStderr
+
+	consume := r.command(append([]string{"exec", "-i", container}, execArgs...)...)
+	consume.Stdin = pr
+	var consumeStderr bytes.Buffer
+	consume.Stderr = &consumeStderr
+
+	if err := save.Start(); err != nil {
+		pr.Close()
+		pw.Close()
+		return fmt.Errorf("%s save %s: %w", r.binary, image, err)
+	}
+	if err := consume.Start(); err != nil {
+		// drop both parent ends so save hits EPIPE and can be reaped
+		pr.Close()
+		pw.Close()
+		_ = save.Wait()
+		return fmt.Errorf("%s exec %s: %w", r.binary, strings.Join(execArgs, " "), err)
+	}
+
+	// the children hold their own dups; closing the parent ends lets
+	// each side see EOF/EPIPE when the other exits
+	pw.Close()
+	pr.Close()
+
+	saveErr := save.Wait()
+	consumeErr := consume.Wait()
+
+	// a consumer failure kills save with SIGPIPE; report the consumer's
+	// error then, so the root cause is not masked by a broken pipe
+	if consumeErr != nil && (saveErr == nil || killedBySIGPIPE(saveErr)) {
+		return fmt.Errorf("%s exec %s: %w\n%s", r.binary, strings.Join(execArgs, " "), consumeErr, consumeStderr.String())
+	}
+	if saveErr != nil {
+		return fmt.Errorf("%s save %s: %w\n%s", r.binary, image, saveErr, saveStderr.String())
+	}
+	return nil
+}
+
+func killedBySIGPIPE(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	ws, ok := ee.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == syscall.SIGPIPE
 }
 
 func (r *Runtime) WaitForService(container, service string, retries int, delay time.Duration) error {

@@ -88,6 +88,9 @@ oinc status --watch
 # fetch/refresh kubeconfig
 oinc kubeconfig
 
+# load a locally built image into the cluster
+oinc load-image localhost/my-image:dev
+
 # switch OCP version (delete + create)
 oinc switch 4.20
 
@@ -155,6 +158,17 @@ oinc kubeconfig --print
 # switch to oinc context
 kubectl config use-context oinc
 ```
+
+## Loading local images
+
+`oinc load-image` streams a locally built image into the cluster's CRI-O store, the `kind load docker-image` equivalent. Pods can then use it with `imagePullPolicy: IfNotPresent` and no registry.
+
+```bash
+docker build -t localhost/my-image:dev .
+oinc load-image localhost/my-image:dev
+```
+
+The ref is preserved exactly, so `localhost/<name>:<tag>` refs resolve as given. Re-running with the same ref succeeds. Works with docker or podman as the host runtime; the command picks whichever one owns the running cluster.
 
 ## Ports
 

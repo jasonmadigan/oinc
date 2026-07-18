@@ -1,0 +1,91 @@
+name: E2E
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+    env:
+      CR: ${{ matrix.runtime }}
+      # podman must be rootful for oinc, so the podman leg runs everything
+      # (oinc, podman, kubectl) under sudo; 'env' is a no-op stand-in on the
+      # docker leg so commands can stay quoted
+      PREFIX: ${{ matrix.runtime == 'podman' && 'sudo' || 'env' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install podman
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Vet, test, build
+        run: |
+          go vet ./...
+          go test ./...
+          make build
+
+      - name: Create cluster
+        run: '"$PREFIX" bin/oinc create --version 4.22 --runtime "$CR"'
+
+      - name: Assert skopeo ships in the oinc image
+        run: '"$PREFIX" "$CR" exec oinc sh -c "command -v skopeo"'
+
+      - name: Reject a ref missing host-side
+        run: |
+          ! "$PREFIX" bin/oinc load-image localhost/oinc-e2e:absent
+
+      - name: Build a trivial local image
+        run: |
+          "$PREFIX" "$CR" build -t localhost/oinc-e2e:smoke - <<'EOF'
+          FROM busybox
+          RUN touch /oinc-e2e-marker
+          EOF
+
+      - name: Load the image into the cluster
+        run: '"$PREFIX" bin/oinc load-image localhost/oinc-e2e:smoke'
+
+      - name: Run a pod from the loaded image
+        run: |
+          "$PREFIX" kubectl --context oinc run e2e-smoke \
+            --image=localhost/oinc-e2e:smoke \
+            --image-pull-policy=IfNotPresent \
+            --restart=Never \
+            --command -- sh -c 'test -f /oinc-e2e-marker && sleep 300'
+          "$PREFIX" kubectl --context oinc wait pod/e2e-smoke --for=condition=Ready --timeout=180s
+
+      - name: Re-load the same image (idempotence)
+        run: '"$PREFIX" bin/oinc load-image localhost/oinc-e2e:smoke'
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          "$PREFIX" "$CR" ps -a || true
+          "$PREFIX" "$CR" logs oinc --tail 100 || true
+          "$PREFIX" "$CR" exec oinc crictl images || true
+          "$PREFIX" kubectl --context oinc get pods -A || true
+          "$PREFIX" kubectl --context oinc describe pod e2e-smoke || true
