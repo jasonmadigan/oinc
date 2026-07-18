@@ -28,6 +28,7 @@ MicroShift RPMs come from the [`@microshift-io/microshift-nightly`](https://copr
 3. **CNI plugins** -- downloaded from `containernetworking/plugins` (v1.8.0), required by kindnet
 4. **Firewall rules** -- trusted zone for pod CIDR (10.42.0.0/16) and link-local (169.254.169.1), public zone for API (6443) and etcd (2379/2380)
 5. **DNS config** -- base domain set to `127.0.0.1.nip.io`
+6. **skopeo** for importing images into CRI-O, guaranteed present
 
 The OpenShift dependencies RPM mirror (`mirror.openshift.com`) provides packages needed by MicroShift at install time. This repo is removed after install.
 
