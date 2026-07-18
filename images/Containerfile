@@ -1,27 +1,58 @@
-# microshift AIO from COPR nightly RPMs
+# microshift AIO from pre-built MicroShift RPMs
 FROM quay.io/centos/centos:stream9
 
 ARG OCP_VERSION
+ARG OKD_VERSION
+ARG RELEASE_TAG=""
+ARG TARBALL_SHA256=""
+ARG COPR_PIN=""
 ARG WITH_OLM=1
 
-# install microshift from COPR nightly + openshift deps mirror
-# copr repo uses epel-9, map uname arch to copr arch naming
+# rpm source is exactly one of:
+#   RELEASE_TAG: microshift-io github release rpm tarball (released versions, sha256-pinned)
+#   COPR_PIN: exact version-release from the nightly copr (pre-release only, copr prunes old builds)
+# guard asserts installed release-info carries OKD_VERSION so source drift fails the build
 RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "aarch64" ]; then COPR_ARCH=aarch64; else COPR_ARCH=x86_64; fi && \
-    printf '[copr-microshift-nightly]\nname=MicroShift Nightly\nbaseurl=https://download.copr.fedorainfracloud.org/results/@microshift-io/microshift-nightly/epel-9-%s/\nenabled=1\ngpgcheck=0\n' \
-      "$COPR_ARCH" \
-      > /etc/yum.repos.d/microshift-nightly.repo && \
+    if [ -z "${OCP_VERSION}" ]; then \
+        echo "OCP_VERSION is required" >&2; exit 1; \
+    fi && \
+    if [ -z "${OKD_VERSION}" ]; then \
+        echo "OKD_VERSION is required" >&2; exit 1; \
+    fi && \
+    if { [ -n "${RELEASE_TAG}" ] && [ -n "${COPR_PIN}" ]; } || \
+       { [ -z "${RELEASE_TAG}" ] && [ -z "${COPR_PIN}" ]; }; then \
+        echo "exactly one of RELEASE_TAG or COPR_PIN is required" >&2; exit 1; \
+    fi && \
+    if [ -n "${RELEASE_TAG}" ] && [ -z "${TARBALL_SHA256}" ]; then \
+        echo "TARBALL_SHA256 is required with RELEASE_TAG" >&2; exit 1; \
+    fi && \
     printf '[openshift-deps]\nname=OpenShift Dependencies\nbaseurl=https://mirror.openshift.com/pub/openshift-v4/%s/dependencies/rpms/%s-el9-beta/\nenabled=1\ngpgcheck=0\n' \
       "$ARCH" "${OCP_VERSION}" \
       > /etc/yum.repos.d/openshift-deps.repo && \
-    dnf install -y microshift-io-dependencies-${OCP_VERSION} && \
-    dnf install -y microshift microshift-release-info \
-                   microshift-kindnet microshift-kindnet-release-info && \
-    if [ "${WITH_OLM}" = "1" ] ; then \
-        dnf install -y microshift-olm microshift-olm-release-info ; \
+    if [ -n "${RELEASE_TAG}" ]; then \
+        curl -fsSL --retry 5 -o /tmp/rpms.tgz \
+          "https://github.com/microshift-io/microshift/releases/download/${RELEASE_TAG}/microshift-rpms-${ARCH}.tgz" && \
+        echo "${TARBALL_SHA256}  /tmp/rpms.tgz" | sha256sum -c && \
+        mkdir -p /tmp/rpms && \
+        tar xzf /tmp/rpms.tgz -C /tmp/rpms --strip-components=1 && \
+        printf '[microshift-local]\nname=MicroShift Local\nbaseurl=file:///tmp/rpms\nenabled=1\ngpgcheck=0\n' \
+          > /etc/yum.repos.d/microshift.repo && \
+        PIN="" ; \
+    else \
+        printf '[microshift-nightly]\nname=MicroShift Nightly\nbaseurl=https://download.copr.fedorainfracloud.org/results/@microshift-io/microshift-nightly/epel-9-%s/\nenabled=1\ngpgcheck=0\n' \
+          "$ARCH" \
+          > /etc/yum.repos.d/microshift.repo && \
+        PIN="-${COPR_PIN}" ; \
     fi && \
-    rm -f /etc/yum.repos.d/openshift-deps.repo \
-         /etc/yum.repos.d/microshift-nightly.repo && \
+    dnf install -y "microshift${PIN}" "microshift-release-info${PIN}" \
+                   "microshift-kindnet${PIN}" "microshift-kindnet-release-info${PIN}" && \
+    if [ "${WITH_OLM}" = "1" ] ; then \
+        dnf install -y "microshift-olm${PIN}" "microshift-olm-release-info${PIN}" ; \
+    fi && \
+    rpm -q microshift-release-info | grep -F "$(echo "${OKD_VERSION}" | tr '-' '_')-" && \
+    rm -rf /tmp/rpms /tmp/rpms.tgz \
+           /etc/yum.repos.d/microshift.repo \
+           /etc/yum.repos.d/openshift-deps.repo && \
     dnf clean all
 
 # post-install: firewall, sysctl, CNI plugins, enable microshift

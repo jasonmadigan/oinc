@@ -5,8 +5,13 @@ allowed-tools: Bash, Read, Edit, Glob, Grep, WebFetch, AskUserQuestion
 
 Scan for new OCP/MicroShift versions and offer to add them.
 
-RPMs come from the COPR nightly repo (`@microshift-io/microshift-nightly`).
-The Containerfile consumes these directly -- no tarballs needed.
+RPMs come from one of two sources, set per version in the images.yml matrix:
+- `release_tag`: a microshift-io/microshift GitHub release RPM tarball (preferred, immutable)
+- `copr_pin`: an exact version-release from the `@microshift-io/microshift-nightly` COPR
+
+The COPR only builds upstream main and prunes old builds, so it is only usable
+for the current pre-release version, pinned. Move a version to `release_tag`
+as soon as a GitHub release for its OKD tag exists.
 
 ## 1. Scan COPR for available versions
 
@@ -35,18 +40,32 @@ for item in data.get('items', []):
 
 Read `pkg/version/version.go` to get currently supported versions. Identify new minor versions not already in the catalogue.
 
-## 3. Check upstream resources
+## 3. Pick the RPM source
+
+For each new version:
+- Look for a GitHub release whose tag ends in the OKD tag (underscored):
+  `gh api repos/microshift-io/microshift/releases --jq '.[].tag_name'`
+  If found, use it as `release_tag`, confirm `microshift-rpms-x86_64.tgz` and `microshift-rpms-aarch64.tgz` assets exist,
+  and record each asset's sha256 as its `tarball_sha256`:
+  `gh api repos/microshift-io/microshift/releases/tags/{tag} --jq '.assets[] | select(.name|startswith("microshift-rpms-")) | "\(.name) \(.digest)"'`
+  (release assets are not guaranteed immutable, so the hash pins the content).
+- Otherwise pin the COPR build: take the full `version-release` from the step 1 scan
+  (e.g. `5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9`) and use it as `copr_pin`.
+  Confirm it exists for both `epel-9-x86_64` and `epel-9-aarch64`.
+
+Also check whether any existing `copr_pin` version now has a GitHub release and offer to switch it to `release_tag`.
+
+## 4. Check upstream resources
 
 For each new version, verify:
 - openshift/api branch: `gh api repos/openshift/api/branches/release-{version} --jq '.name'`
 - Console image: `docker manifest inspect quay.io/openshift/origin-console:{version}`
-- Dependencies RPM: check that `microshift-io-dependencies-{version}` exists in COPR (the Containerfile pins this by version)
 
-## 4. Present findings
+## 5. Present findings
 
 Show a summary table with resource status. Use `AskUserQuestion` to let the user pick version(s) to add.
 
-## 5. Apply changes (after user confirms)
+## 6. Apply changes (after user confirms)
 
 **a. Version catalogue** -- edit `pkg/version/version.go`, add entry at end of `catalogue` slice:
 ```go
@@ -59,17 +78,17 @@ Show a summary table with resource status. Use `AskUserQuestion` to let the user
 },
 ```
 
-**b. CI workflow** -- edit `.github/workflows/images.yml`, add matrix entries for both architectures.
+**b. CI workflow** -- edit `.github/workflows/images.yml`, add matrix entries for both architectures with `okd_version` and either `release_tag` plus `tarball_sha256` or `copr_pin`.
 
 **c. README + docs/versions.md** -- update supported versions tables.
 
-## 6. Verify
+## 7. Verify
 
 - `go build ./...`
 - `go vet ./...`
 - `make build && ./bin/oinc version list`
 
-## 7. Summary
+## 8. Summary
 
 Tell the user what was added. Remind them to:
 - Run the image build workflow: `gh workflow run images.yml`

@@ -10,9 +10,11 @@ Each supported OCP version is an entry in `pkg/version/version.go`. An entry coo
 
 The last entry in the catalogue is the default. `oinc create` uses it unless `--version` is specified.
 
-## RPM source
+## RPM sources
 
-MicroShift RPMs come from the `@microshift-io/microshift-nightly` COPR repo, which publishes daily builds for `epel-9-x86_64` and `epel-9-aarch64`. The Containerfile enables this repo at build time via `dnf copr enable`. No tarball downloads or GitHub release assets required.
+Released versions install MicroShift RPM tarballs from [microshift-io/microshift GitHub releases](https://github.com/microshift-io/microshift/releases). Pre-release versions with no GitHub release yet install from the `@microshift-io/microshift-nightly` COPR repo, pinned to an exact version-release. The COPR only builds upstream main and prunes old builds, so a pinned COPR version can become unbuildable over time; switch it to the tarball path once a GitHub release appears.
+
+Every build asserts the installed `microshift-release-info` carries the intended OKD tag and fails otherwise, so an RPM source drifting to a different version cannot publish silently.
 
 The openshift-deps mirror (`mirror.openshift.com`) is still used for dependency packages during the image build.
 
@@ -22,11 +24,7 @@ Use the `/add-version` Claude command to scan for new MicroShift releases and ad
 
 Or manually:
 
-1. Check COPR for available builds:
-   ```
-   dnf copr search microshift-nightly
-   ```
-   Or browse https://copr.fedorainfracloud.org/coprs/g/microshift-io/microshift-nightly/builds/
+1. Pick the RPM source: a [GitHub release](https://github.com/microshift-io/microshift/releases) tag matching the OKD version (preferred), or a pinned version-release from the [nightly COPR](https://copr.fedorainfracloud.org/coprs/g/microshift-io/microshift-nightly/builds/) if no release exists yet
 
 2. Check that upstream resources exist:
    - `openshift/api` branch `release-{version}`
@@ -34,7 +32,7 @@ Or manually:
 
 3. Add catalogue entry in `pkg/version/version.go`
 
-4. Add CI matrix entries in `.github/workflows/images.yml`
+4. Add CI matrix entries in `.github/workflows/images.yml` with `release_tag` or `copr_pin`
 
 5. Update the versions table in `README.md`
 
