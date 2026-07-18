@@ -18,6 +18,8 @@ type Config struct {
 	Clientset     kubernetes.Interface
 	Runtime       *runtime.Runtime
 	Logger        *slog.Logger
+	// cluster container name, for addons that inspect the container's network
+	Container string
 	// cluster ingress hostname and the host port mapped to container port 80,
 	// for addons that expose Routes on the ports oinc already maps.
 	// IngressErr carries the cause when the port could not be determined.
