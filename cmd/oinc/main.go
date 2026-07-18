@@ -36,6 +36,10 @@ var (
 	flagRHDHImage             string
 	flagRHDHValues            string
 	flagRHDHDisableQuickstart bool
+
+	flagKuadrantDevportal  bool
+	flagMetalLBAddressPool string
+	flagGatewayAPIGateway  bool
 )
 
 // applyRHDHFlags forwards rhdh addon flags to the addon registry.
@@ -58,6 +62,26 @@ func addRHDHFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagRHDHImage, "rhdh-image", "", "rhdh addon: custom image (repository:tag), e.g. a localhost/ ref loaded via load-image")
 	cmd.Flags().StringVar(&flagRHDHValues, "rhdh-values", "", "rhdh addon: path to a helm values overlay merged into the chart install")
 	cmd.Flags().BoolVar(&flagRHDHDisableQuickstart, "rhdh-disable-quickstart", false, "rhdh addon: disable the quickstart onboarding plugin")
+}
+
+// applyInstanceFlags forwards addon instance-creation flags to the addon registry.
+func applyInstanceFlags() {
+	if flagKuadrantDevportal {
+		addons.Configure("kuadrant", map[string]string{"devportal": "true"})
+	}
+	if flagMetalLBAddressPool != "" {
+		addons.Configure("metallb", map[string]string{"address-pool": flagMetalLBAddressPool})
+	}
+	if flagGatewayAPIGateway {
+		addons.Configure("gateway-api", map[string]string{"gateway": "true"})
+	}
+}
+
+// addInstanceFlags registers the addon instance-creation flags on a command.
+func addInstanceFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&flagKuadrantDevportal, "kuadrant-devportal", false, "kuadrant addon: enable the developer portal on the Kuadrant CR and wait for its controller")
+	cmd.Flags().StringVar(&flagMetalLBAddressPool, "metallb-address-pool", "", "metallb addon: create an IPAddressPool and L2Advertisement (\"auto\" derives a range from the container network, or give a range/CIDR)")
+	cmd.Flags().BoolVar(&flagGatewayAPIGateway, "gateway-api-gateway", false, "gateway-api addon: create a default Gateway (kuadrant-ingressgateway, istio class) and wait for it to be programmed")
 }
 
 var buildVersion = "dev"
@@ -105,6 +129,12 @@ func main() {
 			}
 
 			applyRHDHFlags()
+			applyInstanceFlags()
+
+			// addon option flags without an addon list would be dropped
+			if flagAddons == "" && addons.AnyOptions() {
+				return fmt.Errorf("addon option flags require --addons")
+			}
 
 			return oinc.Create(cmd.Context(), oinc.CreateOpts{
 				Version:         flagVersion,
@@ -124,6 +154,7 @@ func main() {
 	createCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring (name=url)")
 	createCmd.Flags().StringVar(&flagAddons, "addons", "", "comma-separated addons to install")
 	addRHDHFlags(createCmd)
+	addInstanceFlags(createCmd)
 
 	var flagForce bool
 	deleteCmd := &cobra.Command{
@@ -273,6 +304,7 @@ func main() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := newLogger(flagLogLevel)
 			applyRHDHFlags()
+			applyInstanceFlags()
 
 			addonArg := ""
 			if len(args) > 0 {
@@ -330,6 +362,7 @@ func main() {
 	}
 
 	addRHDHFlags(addonInstallCmd)
+	addInstanceFlags(addonInstallCmd)
 
 	addonCmd.AddCommand(addonListCmd, addonInstallCmd)
 

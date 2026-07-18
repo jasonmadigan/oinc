@@ -377,7 +377,10 @@ func AddonInstallSteps(ctx context.Context, addonList string, kc []byte, rt *run
 	var steps []*tui.Step
 	for _, a := range sorted {
 		a := a
-		if installed[a.Name()] {
+		// skip ready addons, unless options were set for them this
+		// invocation: readiness only proves the base install, and the
+		// idempotent re-install is what applies the options
+		if installed[a.Name()] && !addons.HasOptions(a.Name()) {
 			continue
 		}
 		step := &tui.Step{Name: a.Name()}
