@@ -13,6 +13,7 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 | `metallb` | 0.14.9 | upstream manifests | none |
 | `istio` | 1.29.0 (sail) | helm (sail operator) | none |
 | `kuadrant` | 1.4.1 | helm | gateway-api, cert-manager, metallb, istio |
+| `rhdh` | 6.2.2 (chart) | helm | none |
 
 ## Install methods
 
@@ -22,12 +23,37 @@ Downloaded via curl and applied via `kubectl apply --server-side --force-conflic
 
 For gateway-api specifically, CRDs are applied via the dynamic k8s client directly (not kubectl) since it only needs to handle CRD resources.
 
-### Helm (istio, kuadrant)
+### Helm (istio, kuadrant, rhdh)
 
 Uses `helm upgrade --install` for idempotency. Helm must be available in `$PATH`.
 
 - **Istio**: installs the Sail operator from a GitHub release tarball, then creates an `Istio` CR in the `Ready` phase
 - **Kuadrant**: adds the `kuadrant.io` helm repo, installs the operator, then creates a `Kuadrant` CR and waits for it to become ready
+- **RHDH**: adds the `rhdh` helm repo and installs the `rhdh/backstage` chart into the `rhdh` namespace (see below)
+
+## RHDH
+
+Installs Red Hat Developer Hub with guest auth enabled, exposed via an OpenShift Route on the HTTP port oinc already maps. With default ports the app is reachable at `http://rhdh.127.0.0.1.nip.io:9080` (guest sign-in, no port-forward needed).
+
+The version syntax pins the chart from https://redhat-developer.github.io/rhdh-chart/: `rhdh@6.2.2` installs chart 6.2.2 (which the addon pairs with the `rhdh:1.10` image line, since the chart's own default image is the `next` nightly), `rhdh@latest` follows the chart index. The chart carries no appVersion and is image-agnostic.
+
+### Options
+
+Configured via flags on `oinc create` and `oinc addon install`:
+
+| Flag | Effect |
+|-|-|
+| `--rhdh-image repo:tag` | custom RHDH image. Rendered with `registry: ""` so `localhost/` refs sideloaded via `oinc load-image` resolve, and `pullPolicy: IfNotPresent` |
+| `--rhdh-values file` | helm values overlay merged into the chart install, for dynamic-plugins config and app-config extras |
+| `--rhdh-disable-quickstart` | disables the quickstart onboarding plugin (its persistent progressbar breaks e2e page-ready waits) |
+
+The overlay is passed to helm after the addon's base values, so it wins on conflicts. Helm merges maps per-key but replaces lists wholesale: an overlay that sets `global.dynamic.plugins` owns the whole list, including the quickstart entry added by `--rhdh-disable-quickstart`, and one that sets `upstream.backstage.extraVolumes` must re-declare the full volume set described below.
+
+### MicroShift quirks the addon owns
+
+- The chart defaults `dynamic-plugins-root` to an ephemeral 5Gi PVC; MicroShift has no storage provisioner, so it is overridden to an `emptyDir`. Because helm replaces the `extraVolumes` list wholesale, the addon re-declares the full seven-volume set the `install-dynamic-plugins` initContainer and main container mount (`dynamic-plugins-root`, `dynamic-plugins`, `dynamic-plugins-npmrc`, `dynamic-plugins-registry-auth`, `npmcacache`, `extensions-catalog`, `temp`); dropping any of them gets the Deployment rejected with orphan volumeMounts.
+- Postgres persistence is off (emptyDir) with a 2Gi ephemeral-storage limit; the chart default limit of 20Mi assumes a PVC and would evict the pod.
+- The Route is created with TLS disabled and an explicit host on the cluster ingress hostname, and the app's `baseUrl`/CORS origin are set to the externally mapped URL (RHDH bakes its external URL into app config).
 
 ## Why not OLM?
 
