@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -207,6 +209,70 @@ func (r *Runtime) WaitForService(container, service string, retries int, delay t
 
 func (r *Runtime) CopyFromContainer(container, path string) ([]byte, error) {
 	return r.ExecInContainer(container, "cat", path)
+}
+
+// ContainerSubnet returns the IPv4 subnet (CIDR) of the network the named
+// container is attached to, derived from the container's own address.
+func (r *Runtime) ContainerSubnet(name string) (string, error) {
+	out, err := r.run("inspect", name)
+	if err != nil {
+		return "", err
+	}
+	return subnetFromInspect(out)
+}
+
+// subnetFromInspect derives the container's IPv4 subnet from inspect JSON.
+// docker's default bridge reports the address at the NetworkSettings top
+// level; podman and user-defined networks report it per-network.
+func subnetFromInspect(data []byte) (string, error) {
+	var raw []struct {
+		NetworkSettings struct {
+			IPAddress   string `json:"IPAddress"`
+			IPPrefixLen int    `json:"IPPrefixLen"`
+			Networks    map[string]struct {
+				IPAddress   string `json:"IPAddress"`
+				IPPrefixLen int    `json:"IPPrefixLen"`
+			} `json:"Networks"`
+		} `json:"NetworkSettings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", fmt.Errorf("parsing inspect output: %w", err)
+	}
+	if len(raw) == 0 {
+		return "", fmt.Errorf("empty inspect result")
+	}
+
+	ns := raw[0].NetworkSettings
+	addr, prefix := ns.IPAddress, ns.IPPrefixLen
+	if addr == "" {
+		// sorted for determinism when attached to several networks
+		names := make([]string, 0, len(ns.Networks))
+		for n := range ns.Networks {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			if nw := ns.Networks[n]; nw.IPAddress != "" {
+				addr, prefix = nw.IPAddress, nw.IPPrefixLen
+				break
+			}
+		}
+	}
+	if addr == "" {
+		return "", fmt.Errorf("container has no network address")
+	}
+	// a zero or out-of-range prefix would yield a subnet like 0.0.0.0/0
+	if prefix <= 0 || prefix > 32 {
+		return "", fmt.Errorf("container address %s has unusable prefix length %d", addr, prefix)
+	}
+
+	ip := net.ParseIP(addr)
+	if ip == nil || ip.To4() == nil {
+		return "", fmt.Errorf("container address %q is not IPv4", addr)
+	}
+	mask := net.CIDRMask(prefix, 32)
+	subnet := net.IPNet{IP: ip.Mask(mask), Mask: mask}
+	return subnet.String(), nil
 }
 
 type ContainerInfo struct {

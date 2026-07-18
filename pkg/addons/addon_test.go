@@ -172,6 +172,7 @@ func TestConfigure(t *testing.T) {
 	}
 	defer func() {
 		registry = orig
+		optionsSet = map[string]map[string]bool{}
 	}()
 
 	registry = map[string]Addon{}
@@ -211,3 +212,73 @@ type fakeValidatingAddon struct {
 }
 
 func (f *fakeValidatingAddon) Validate() error { return f.validateErr }
+
+// resetOptions clears option tracking and the touched singletons directly,
+// bypassing Configure so the reset itself is not recorded.
+func resetOptions(t *testing.T, opts map[string]map[string]string) {
+	t.Helper()
+	t.Cleanup(func() {
+		for name, o := range opts {
+			if c, ok := registry[name].(Configurable); ok {
+				c.SetOptions(o)
+			}
+		}
+		optionsSet = map[string]map[string]bool{}
+	})
+}
+
+// options for an addon outside the resolved closure must fail pre-flight,
+// naming the flag, instead of being silently dropped.
+func TestResolveRejectsOptionsOutsideClosure(t *testing.T) {
+	resetOptions(t, map[string]map[string]string{
+		"metallb": {"address-pool": ""},
+	})
+	Configure("metallb", map[string]string{"address-pool": "auto"})
+
+	_, err := Resolve([]string{"cert-manager"})
+	if err == nil {
+		t.Fatal("expected error for options on an addon outside the requested set")
+	}
+	if !strings.Contains(err.Error(), "--metallb-address-pool") || !strings.Contains(err.Error(), "metallb") {
+		t.Errorf("error %q should name the flag and the missing addon", err)
+	}
+}
+
+// dependency-pulled addons are in the closure: --gateway-api-gateway pulls
+// metallb, so metallb options with only gateway-api listed must pass.
+func TestResolveAcceptsOptionsForDepPulledAddon(t *testing.T) {
+	resetOptions(t, map[string]map[string]string{
+		"metallb":     {"address-pool": ""},
+		"gateway-api": {"gateway": "false"},
+	})
+	Configure("gateway-api", map[string]string{"gateway": "true"})
+	Configure("metallb", map[string]string{"address-pool": "auto"})
+
+	sorted, err := Resolve([]string{"gateway-api"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	names := map[string]bool{}
+	for _, a := range sorted {
+		names[a.Name()] = true
+	}
+	if !names["metallb"] || !names["istio"] {
+		t.Errorf("closure %v should include the option-pulled dependencies", names)
+	}
+}
+
+// version pins are not instance options: they must not mark an addon as
+// having options, or plain @version installs would defeat the ready-skip.
+func TestConfigureVersionOnlyIsNotTracked(t *testing.T) {
+	resetOptions(t, map[string]map[string]string{
+		"metallb": {"version": ""},
+	})
+	Configure("metallb", map[string]string{"version": "0.14.8"})
+
+	if HasOptions("metallb") {
+		t.Error("version-only configuration must not count as options")
+	}
+	if AnyOptions() {
+		t.Error("AnyOptions must stay false for version-only configuration")
+	}
+}

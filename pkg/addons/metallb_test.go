@@ -262,6 +262,87 @@ func TestInjectLBClassArgMissingTarget(t *testing.T) {
 	}
 }
 
+func TestValidateAddressPool(t *testing.T) {
+	for _, tt := range []struct {
+		name, value string
+		wantErr     bool
+	}{
+		{"empty (option off)", "", false},
+		{"auto", "auto", false},
+		{"cidr", "192.168.42.0/28", false},
+		{"range", "172.17.0.200-172.17.0.220", false},
+		{"ipv6 range", "fd00::c8-fd00::dc", false},
+		{"garbage", "banana", true},
+		{"bad cidr", "10.0.0.0/33", true},
+		{"start after end", "172.17.0.220-172.17.0.200", true},
+		{"mixed families", "172.17.0.200-fd00::dc", true},
+		{"missing end", "172.17.0.200-", true},
+		{"too many parts", "1.2.3.4-5.6.7.8-9.10.11.12", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &metalLB{}
+			m.SetOptions(map[string]string{"address-pool": tt.value})
+			err := m.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate(%q) err = %v, wantErr = %v", tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDeriveAddressRange(t *testing.T) {
+	for _, tt := range []struct {
+		subnet, want string
+		wantErr      bool
+	}{
+		{"172.17.0.0/16", "172.17.0.200-172.17.0.220", false},
+		{"10.88.0.0/16", "10.88.0.200-10.88.0.220", false},
+		{"192.168.42.0/24", "192.168.42.200-192.168.42.220", false},
+		{"10.0.0.0/25", "", true}, // .200 outside the subnet
+		{"not-a-subnet", "", true},
+	} {
+		t.Run(tt.subnet, func(t *testing.T) {
+			got, err := deriveAddressRange(tt.subnet)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("range = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// the pool and advertisement must land in metallb-system and survive a
+// re-install without duplication or errors.
+func TestEnsureAddressPool(t *testing.T) {
+	client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+	cfg := &Config{
+		DynamicClient: client,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	m := &metalLB{}
+	for range 2 { // second call must be a no-op
+		if err := m.ensureAddressPool(context.Background(), cfg, "172.17.0.200-172.17.0.220"); err != nil {
+			t.Fatalf("ensureAddressPool: %v", err)
+		}
+	}
+
+	pool, err := client.Resource(ipAddressPoolGVR).Namespace("metallb-system").Get(context.Background(), metalLBPoolName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("pool not created: %v", err)
+	}
+	addrs, found, _ := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
+	if !found || len(addrs) != 1 || addrs[0] != "172.17.0.200-172.17.0.220" {
+		t.Errorf("pool addresses = %v, want the given range", addrs)
+	}
+
+	if _, err := client.Resource(l2AdvertisementGVR).Namespace("metallb-system").Get(context.Background(), metalLBL2Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("l2 advertisement not created: %v", err)
+	}
+}
+
 func TestEnsureContainerArgMissingContainer(t *testing.T) {
 	dep := fakeWorkload("Deployment", "controller",
 		map[string]any{"name": "other", "args": []any{}})

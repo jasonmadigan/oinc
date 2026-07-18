@@ -18,6 +18,8 @@ type Config struct {
 	Clientset     kubernetes.Interface
 	Runtime       *runtime.Runtime
 	Logger        *slog.Logger
+	// cluster container name, for addons that inspect the container's network
+	Container string
 	// cluster ingress hostname and the host port mapped to container port 80,
 	// for addons that expose Routes on the ports oinc already maps.
 	// IngressErr carries the cause when the port could not be determined.
@@ -59,6 +61,24 @@ func Validate(list []Addon) error {
 
 var registry = map[string]Addon{}
 
+// optionsSet tracks non-version options applied via Configure this
+// invocation, so resolution can reject options whose addon is outside the
+// requested set and installs can re-run a ready addon to apply them.
+var optionsSet = map[string]map[string]bool{}
+
+// HasOptions reports whether non-version options were applied to an addon.
+func HasOptions(name string) bool { return len(optionsSet[name]) > 0 }
+
+// AnyOptions reports whether any addon had non-version options applied.
+func AnyOptions() bool {
+	for _, keys := range optionsSet {
+		if len(keys) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func Register(a Addon) { registry[a.Name()] = a }
 
 func Get(name string) (Addon, bool) {
@@ -77,6 +97,15 @@ func Configure(name string, opts map[string]string) {
 	if a, ok := registry[name]; ok {
 		if c, ok := a.(Configurable); ok {
 			c.SetOptions(opts)
+			for k := range opts {
+				if k == "version" {
+					continue
+				}
+				if optionsSet[name] == nil {
+					optionsSet[name] = map[string]bool{}
+				}
+				optionsSet[name][k] = true
+			}
 		}
 	}
 }
@@ -143,6 +172,25 @@ func Resolve(specs []string) ([]Addon, error) {
 		if err := collect(n); err != nil {
 			return nil, err
 		}
+	}
+
+	// options for addons outside the closure would be silently ignored;
+	// fail naming the flag spelling (--<addon>-<option>) instead
+	var orphaned []string
+	for name := range optionsSet {
+		if HasOptions(name) && !needed[name] {
+			orphaned = append(orphaned, name)
+		}
+	}
+	if len(orphaned) > 0 {
+		sort.Strings(orphaned)
+		name := orphaned[0]
+		var flags []string
+		for k := range optionsSet[name] {
+			flags = append(flags, "--"+name+"-"+k)
+		}
+		sort.Strings(flags)
+		return nil, fmt.Errorf("%s set but addon %q is not in the requested set; add it to the addon list", strings.Join(flags, ", "), name)
 	}
 
 	// topological sort (kahn's algorithm)

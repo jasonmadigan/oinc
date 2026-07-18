@@ -1,8 +1,10 @@
 package addons
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -16,13 +18,16 @@ import (
 const (
 	defaultMetalLBVersion = "0.14.9"
 	// services opt in to metallb by setting spec.loadBalancerClass to this
-	metalLBClass = "oinc.io/metallb"
+	metalLBClass    = "oinc.io/metallb"
+	metalLBPoolName = "oinc-pool"
+	metalLBL2Name   = "oinc-l2"
 )
 
 func init() { Register(&metalLB{}) }
 
 type metalLB struct {
-	version string
+	version     string
+	addressPool string
 }
 
 func (m *metalLB) Name() string           { return "metallb" }
@@ -32,6 +37,43 @@ func (m *metalLB) SetOptions(opts map[string]string) {
 	if v, ok := opts["version"]; ok {
 		m.version = v
 	}
+	if v, ok := opts["address-pool"]; ok {
+		m.addressPool = v
+	}
+}
+
+// Validate checks flag-provided config before any cluster work.
+func (m *metalLB) Validate() error {
+	return validateAddressPool(m.addressPool)
+}
+
+// validateAddressPool accepts "" (off), "auto", a CIDR, or a "start-end"
+// address range.
+func validateAddressPool(v string) error {
+	if v == "" || v == "auto" {
+		return nil
+	}
+	if strings.Contains(v, "/") {
+		if _, _, err := net.ParseCIDR(v); err != nil {
+			return fmt.Errorf("--metallb-address-pool: %w", err)
+		}
+		return nil
+	}
+	parts := strings.Split(v, "-")
+	if len(parts) != 2 {
+		return fmt.Errorf(`--metallb-address-pool %q: want "auto", a CIDR, or "start-end"`, v)
+	}
+	start, end := net.ParseIP(parts[0]), net.ParseIP(parts[1])
+	if start == nil || end == nil {
+		return fmt.Errorf(`--metallb-address-pool %q: want "auto", a CIDR, or "start-end"`, v)
+	}
+	if (start.To4() == nil) != (end.To4() == nil) {
+		return fmt.Errorf("--metallb-address-pool %q: start and end are different address families", v)
+	}
+	if bytes.Compare(start.To16(), end.To16()) > 0 {
+		return fmt.Errorf("--metallb-address-pool %q: start is after end", v)
+	}
+	return nil
 }
 
 func (m *metalLB) resolveVersion() string {
@@ -172,7 +214,111 @@ func appendContainerArg(obj *unstructured.Unstructured, container, arg string) (
 }
 
 func (m *metalLB) Ready(ctx context.Context, cfg *Config) error {
-	return waitForDeployment(ctx, cfg, "metallb-system", "controller", 5*time.Minute)
+	if err := waitForDeployment(ctx, cfg, "metallb-system", "controller", 5*time.Minute); err != nil {
+		return err
+	}
+	if m.addressPool == "" {
+		return nil
+	}
+
+	addresses, err := m.resolveAddresses(cfg)
+	if err != nil {
+		return err
+	}
+	cfg.Logger.Info("creating metallb address pool", "addresses", addresses)
+	return m.ensureAddressPool(ctx, cfg, addresses)
+}
+
+// resolveAddresses turns the address-pool option into a metallb addresses
+// entry, deriving a range from the cluster container's network for "auto".
+func (m *metalLB) resolveAddresses(cfg *Config) (string, error) {
+	if m.addressPool != "auto" {
+		return m.addressPool, nil
+	}
+	subnet, err := cfg.Runtime.ContainerSubnet(cfg.Container)
+	if err != nil {
+		return "", fmt.Errorf("deriving address pool from container network: %w", err)
+	}
+	return deriveAddressRange(subnet)
+}
+
+// deriveAddressRange returns a small range near the top of the subnet's first
+// /24 (x.y.z.200-x.y.z.220), clear of runtime-assigned container addresses
+// which are allocated from the bottom.
+func deriveAddressRange(subnet string) (string, error) {
+	_, ipnet, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return "", fmt.Errorf("parsing subnet %q: %w", subnet, err)
+	}
+	base := ipnet.IP.To4()
+	if base == nil {
+		return "", fmt.Errorf("subnet %q is not IPv4", subnet)
+	}
+	start := net.IPv4(base[0], base[1], base[2], 200)
+	end := net.IPv4(base[0], base[1], base[2], 220)
+	if !ipnet.Contains(start) || !ipnet.Contains(end) {
+		return "", fmt.Errorf("subnet %s too small to hold the derived .200-.220 range, give an explicit address-pool", subnet)
+	}
+	return fmt.Sprintf("%s-%s", start, end), nil
+}
+
+var (
+	ipAddressPoolGVR = schema.GroupVersionResource{
+		Group: "metallb.io", Version: "v1beta1", Resource: "ipaddresspools",
+	}
+	l2AdvertisementGVR = schema.GroupVersionResource{
+		Group: "metallb.io", Version: "v1beta1", Resource: "l2advertisements",
+	}
+)
+
+// ensureAddressPool creates the IPAddressPool and L2Advertisement. metallb's
+// validating webhook is served by the controller pod and its caBundle can lag
+// deployment availability, so each ensure gets a few extra rounds beyond
+// ensureResource's own retry window.
+func (m *metalLB) ensureAddressPool(ctx context.Context, cfg *Config, addresses string) error {
+	pool := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "metallb.io/v1beta1",
+			"kind":       "IPAddressPool",
+			"metadata": map[string]any{
+				"name":      metalLBPoolName,
+				"namespace": "metallb-system",
+			},
+			"spec": map[string]any{
+				"addresses": []any{addresses},
+			},
+		},
+	}
+	l2 := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "metallb.io/v1beta1",
+			"kind":       "L2Advertisement",
+			"metadata": map[string]any{
+				"name":      metalLBL2Name,
+				"namespace": "metallb-system",
+			},
+		},
+	}
+
+	for _, inst := range []struct {
+		gvr schema.GroupVersionResource
+		obj *unstructured.Unstructured
+	}{
+		{ipAddressPoolGVR, pool},
+		{l2AdvertisementGVR, l2},
+	} {
+		var err error
+		for range 3 {
+			if err = ensureResource(ctx, cfg, inst.gvr, inst.obj); err == nil {
+				break
+			}
+			cfg.Logger.Debug("retrying metallb instance create", "kind", inst.obj.GetKind(), "err", err)
+		}
+		if err != nil {
+			return fmt.Errorf("creating %s: %w", inst.obj.GetKind(), err)
+		}
+	}
+	return nil
 }
 
 var sccGVR = schema.GroupVersionResource{

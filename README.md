@@ -145,6 +145,22 @@ Pin addon versions with `@`:
 oinc addon install cert-manager@1.16.0
 ```
 
+### Instance options
+
+Opt-in flags make the addons create the instances a working cluster needs, on top of the operators and CRDs they already install:
+
+```bash
+# --kuadrant-devportal: enable the developer portal on the Kuadrant CR
+# --metallb-address-pool: IPAddressPool + L2Advertisement (auto-derived range)
+# --gateway-api-gateway: default Gateway (kuadrant-ingressgateway, istio class), waits for Programmed
+oinc create --addons kuadrant@latest \
+  --kuadrant-devportal \
+  --metallb-address-pool auto \
+  --gateway-api-gateway
+```
+
+`--metallb-address-pool` also takes an explicit range (`172.17.0.200-172.17.0.220`) or CIDR. Defaults are unchanged: without the flags the addons behave exactly as before. See [docs/addons.md](docs/addons.md) for the mechanics (portal field verification, gateway address via the class-scoped metallb).
+
 ### RHDH
 
 The `rhdh` addon installs Red Hat Developer Hub with guest auth enabled and exposes it via a Route on the ingress HTTP port. With default ports it is reachable at `http://rhdh.127.0.0.1.nip.io:9080` (no port-forward needed).

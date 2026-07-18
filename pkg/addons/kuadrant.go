@@ -26,7 +26,8 @@ const (
 func init() { Register(&kuadrant{}) }
 
 type kuadrant struct {
-	version string
+	version   string
+	devportal bool
 }
 
 func (k *kuadrant) Name() string {
@@ -40,6 +41,9 @@ func (k *kuadrant) Dependencies() []string {
 func (k *kuadrant) SetOptions(opts map[string]string) {
 	if v, ok := opts["version"]; ok {
 		k.version = v
+	}
+	if v, ok := opts["devportal"]; ok {
+		k.devportal = v == "true"
 	}
 }
 
@@ -263,23 +267,87 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 	waitForAdmissionMapper(ctx, cfg)
 
 	// create the Kuadrant CR to deploy operand components
-	cr := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "kuadrant.io/v1beta1",
-			"kind":       "Kuadrant",
-			"metadata": map[string]any{
-				"name":      "kuadrant",
-				"namespace": "kuadrant-system",
-			},
-		},
-	}
-
-	if err := ensureResource(ctx, cfg, kuadrantGVR, cr); err != nil {
+	if err := ensureResource(ctx, cfg, kuadrantGVR, k.kuadrantCR()); err != nil {
 		return err
 	}
 
+	if k.devportal {
+		if err := ensureDevportal(ctx, cfg); err != nil {
+			return err
+		}
+	}
+
 	// wait for the Kuadrant CR to become ready
-	return waitForKuadrantReady(ctx, cfg, 5*time.Minute, kuadrantWatchdogAfter, 5*time.Second)
+	if err := waitForKuadrantReady(ctx, cfg, 5*time.Minute, kuadrantWatchdogAfter, 5*time.Second); err != nil {
+		return err
+	}
+
+	if k.devportal {
+		// the operator creates the controller deployment asynchronously;
+		// waitForDeployment rides out both its appearance and its rollout
+		cfg.Logger.Info("waiting for developer portal controller")
+		if err := waitForDeployment(ctx, cfg, "kuadrant-system", "developer-portal-controller", 5*time.Minute); err != nil {
+			return fmt.Errorf("developer portal enabled on the kuadrant CR but its controller did not roll out: %w", err)
+		}
+	}
+	return nil
+}
+
+// kuadrantCR builds the Kuadrant CR. Without options it stays metadata-only,
+// matching what previous releases created.
+func (k *kuadrant) kuadrantCR() *unstructured.Unstructured {
+	obj := map[string]any{
+		"apiVersion": "kuadrant.io/v1beta1",
+		"kind":       "Kuadrant",
+		"metadata": map[string]any{
+			"name":      "kuadrant",
+			"namespace": "kuadrant-system",
+		},
+	}
+	if k.devportal {
+		obj["spec"] = map[string]any{
+			"components": map[string]any{
+				"developerPortal": map[string]any{"enabled": true},
+			},
+		}
+	}
+	return &unstructured.Unstructured{Object: obj}
+}
+
+// ensureDevportal enables the developer portal on the Kuadrant CR and
+// verifies the field persisted. Structural CRD pruning silently drops unknown
+// fields, so both the create and a merge-patch can report success without
+// taking effect when the installed kuadrant version predates the field.
+func ensureDevportal(ctx context.Context, cfg *Config) error {
+	client := cfg.DynamicClient.Resource(kuadrantGVR).Namespace("kuadrant-system")
+
+	obj, err := client.Get(ctx, "kuadrant", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting kuadrant CR: %w", err)
+	}
+	if devportalEnabled(obj) {
+		return nil
+	}
+
+	patch := []byte(`{"spec":{"components":{"developerPortal":{"enabled":true}}}}`)
+	if _, err := client.Patch(ctx, "kuadrant", types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		return fmt.Errorf("enabling developer portal on kuadrant CR: %w", err)
+	}
+
+	// verify against a fresh read, not the patch response
+	obj, err = client.Get(ctx, "kuadrant", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting kuadrant CR: %w", err)
+	}
+	if !devportalEnabled(obj) {
+		return fmt.Errorf("spec.components.developerPortal did not persist on the kuadrant CR: the installed kuadrant version likely predates the developer portal, pin one that ships it (e.g. kuadrant@latest)")
+	}
+	return nil
+}
+
+func devportalEnabled(obj *unstructured.Unstructured) bool {
+	enabled, found, _ := unstructured.NestedBool(obj.Object, "spec", "components", "developerPortal", "enabled")
+	return found && enabled
 }
 
 const (
