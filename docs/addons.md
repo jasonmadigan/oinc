@@ -8,7 +8,7 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 
 | Addon | Default version | Install method | Dependencies |
 |-|-|-|-|
-| `gateway-api` | 1.2.1 | upstream CRD manifests | none |
+| `gateway-api` | 1.2.1 | upstream CRD manifests | none (istio, metallb with `--gateway-api-gateway`) |
 | `cert-manager` | 1.17.1 | upstream manifests | none |
 | `metallb` | 0.14.9 | upstream manifests | none |
 | `istio` | 1.29.0 (sail) | helm (sail operator) | none |
@@ -54,6 +54,32 @@ The overlay is passed to helm after the addon's base values, so it wins on confl
 - The chart defaults `dynamic-plugins-root` to an ephemeral 5Gi PVC; MicroShift has no storage provisioner, so it is overridden to an `emptyDir`. Because helm replaces the `extraVolumes` list wholesale, the addon re-declares the full seven-volume set the `install-dynamic-plugins` initContainer and main container mount (`dynamic-plugins-root`, `dynamic-plugins`, `dynamic-plugins-npmrc`, `dynamic-plugins-registry-auth`, `npmcacache`, `extensions-catalog`, `temp`); dropping any of them gets the Deployment rejected with orphan volumeMounts.
 - Postgres persistence is off (emptyDir) with a 2Gi ephemeral-storage limit; the chart default limit of 20Mi assumes a PVC and would evict the pod.
 - The Route is created with TLS disabled and an explicit host on the cluster ingress hostname, and the app's `baseUrl`/CORS origin are set to the externally mapped URL (RHDH bakes its external URL into app config).
+
+## Instance options
+
+By default the kuadrant, metallb and gateway-api addons install operators and CRDs but no instances beyond a bare `Kuadrant` CR. Opt-in flags (on `oinc create` and `oinc addon install`) make oinc create the instances a working cluster needs:
+
+| Flag | Effect |
+|-|-|
+| `--kuadrant-devportal` | sets `spec.components.developerPortal.enabled: true` on the `Kuadrant` CR (created with it, or merge-patched onto an existing CR), then waits for `deployment/developer-portal-controller` in `kuadrant-system` to be Available |
+| `--metallb-address-pool VALUE` | creates an `IPAddressPool` (`oinc-pool`) and `L2Advertisement` (`oinc-l2`) in `metallb-system` once the controller is up. `auto` derives an `x.y.z.200-x.y.z.220` range from the cluster container's network subnet; an explicit range (`start-end`) or CIDR is used as given, validated at pre-flight |
+| `--gateway-api-gateway` | creates a `Gateway` named `kuadrant-ingressgateway` (istio class, http/80, routes from all namespaces) in `gateway-system` and waits for it to be Programmed with an address |
+
+All three together give a cluster where the developer portal runs and the gateway has a real address:
+
+```bash
+oinc create --addons kuadrant@latest \
+  --kuadrant-devportal --metallb-address-pool auto --gateway-api-gateway
+```
+
+Defaults are unchanged: without the flags the addons behave exactly as before.
+
+Mechanics worth knowing:
+
+- **Portal field verification**: structural CRD pruning silently drops unknown fields, so a write can report success without taking effect. The addon re-reads the CR after writing and fails loud if `spec.components.developerPortal` did not persist, which means the installed kuadrant version predates the field; pin one that ships it (e.g. `kuadrant@latest`).
+- **Gateway address via the scoped metallb**: oinc's metallb only manages services with `spec.loadBalancerClass: oinc.io/metallb` (see below), and istio's auto-deployed gateway service would be class-less. The field is immutable after creation, so the addon creates a ConfigMap (`kuadrant-ingressgateway-params`) referenced from the Gateway's `spec.infrastructure.parametersRef`; istio's gateway deployment controller strategic-merges its `service` overlay into the rendered Service before first apply, so the Service is born with the class and the scoped metallb assigns it an address. The metallb scoping itself is untouched.
+- **Ordering**: `--gateway-api-gateway` gives the gateway-api addon dependencies on istio and metallb, so the Gateway is only created and waited on once istiod can deploy it and metallb can address it. Pair it with `--metallb-address-pool` (or a pre-existing pool), otherwise the Programmed wait times out.
+- **Idempotence**: all instances are create-if-absent; re-running `oinc addon install` with the same flags is a no-op for existing instances.
 
 ## Why not OLM?
 
