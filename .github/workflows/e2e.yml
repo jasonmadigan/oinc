@@ -90,6 +90,81 @@ jobs:
           "$PREFIX" kubectl --context oinc get pods -A || true
           "$PREFIX" kubectl --context oinc describe pod e2e-smoke || true
 
+  # addon instance options: portal-enabled kuadrant CR, metallb address pool,
+  # default gateway. the kuadrant chain is heavy, so a single docker leg with
+  # a pinned version and a generous but bounded timeout
+  instances:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      - name: Create cluster with instance options
+        run: |
+          bin/oinc create --version 4.22 --runtime docker --addons kuadrant@latest \
+            --kuadrant-devportal --metallb-address-pool auto --gateway-api-gateway
+
+      - name: Assert the portal field persisted on the kuadrant CR
+        run: |
+          test "$(kubectl --context oinc -n kuadrant-system get kuadrant kuadrant \
+            -o jsonpath='{.spec.components.developerPortal.enabled}')" = "true"
+
+      - name: Assert the developer portal controller is available
+        run: |
+          kubectl --context oinc -n kuadrant-system wait deployment/developer-portal-controller \
+            --for=condition=Available --timeout=120s
+
+      - name: Assert the address pool and advertisement exist
+        run: |
+          kubectl --context oinc -n metallb-system get ipaddresspool oinc-pool
+          kubectl --context oinc -n metallb-system get l2advertisement oinc-l2
+
+      # fully qualified kind: bare "gateway" resolves to istio's
+      # gateways.networking.istio.io on this cluster
+      - name: Assert the gateway is programmed with an address
+        run: |
+          kubectl --context oinc -n gateway-system wait gateway.gateway.networking.k8s.io/kuadrant-ingressgateway \
+            --for=condition=Programmed --timeout=120s
+          test -n "$(kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io kuadrant-ingressgateway \
+            -o jsonpath='{.status.addresses[0].value}')"
+
+      - name: Assert the generated service opted in to the scoped metallb
+        run: |
+          test "$(kubectl --context oinc -n gateway-system get svc kuadrant-ingressgateway-istio \
+            -o jsonpath='{.spec.loadBalancerClass}')" = "oinc.io/metallb"
+
+      - name: Assert router-default kept its service-lb ingress
+        run: |
+          test -n "$(kubectl --context oinc -n openshift-ingress get svc router-default \
+            -o jsonpath='{.status.loadBalancer.ingress}')"
+
+      - name: Re-install addons with the same options (idempotence)
+        run: |
+          bin/oinc addon install kuadrant@latest \
+            --kuadrant-devportal --metallb-address-pool auto --gateway-api-gateway
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker logs oinc --tail 100 || true
+          kubectl --context oinc get pods -A || true
+          kubectl --context oinc -n kuadrant-system get kuadrant kuadrant -o yaml || true
+          kubectl --context oinc -n kuadrant-system get deploy,pods || true
+          kubectl --context oinc -n kuadrant-system logs deployment/kuadrant-operator-controller-manager --tail 100 --all-containers || true
+          kubectl --context oinc -n metallb-system get ipaddresspool,l2advertisement -o yaml || true
+          kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io,svc,deploy,pods -o wide || true
+          kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io kuadrant-ingressgateway -o yaml || true
+
   # rhdh + postgres + microshift is memory-heavy, so this runs as its own
   # single leg (docker, pinned version) rather than in the smoke matrix
   rhdh:
