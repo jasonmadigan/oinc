@@ -40,6 +40,8 @@ var (
 	flagKuadrantDevportal  bool
 	flagMetalLBAddressPool string
 	flagGatewayAPIGateway  bool
+
+	flagMCPGatewayValues string
 )
 
 // applyRHDHFlags forwards rhdh addon flags to the addon registry.
@@ -62,6 +64,20 @@ func addRHDHFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagRHDHImage, "rhdh-image", "", "rhdh addon: custom image (repository:tag), e.g. a localhost/ ref loaded via load-image")
 	cmd.Flags().StringVar(&flagRHDHValues, "rhdh-values", "", "rhdh addon: path to a helm values overlay merged into the chart install")
 	cmd.Flags().BoolVar(&flagRHDHDisableQuickstart, "rhdh-disable-quickstart", false, "rhdh addon: disable the quickstart onboarding plugin")
+}
+
+// applyMCPGatewayFlags forwards mcp-gateway addon flags to the addon registry.
+func applyMCPGatewayFlags() {
+	opts := map[string]string{}
+	if flagMCPGatewayValues != "" {
+		opts["values"] = flagMCPGatewayValues
+	}
+	addons.Configure("mcp-gateway", opts)
+}
+
+// addMCPGatewayFlags registers the mcp-gateway addon flags on a command.
+func addMCPGatewayFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&flagMCPGatewayValues, "mcp-gateway-values", "", "mcp-gateway addon: path to a helm values overlay merged into the chart install")
 }
 
 // applyInstanceFlags forwards addon instance-creation flags to the addon registry.
@@ -129,6 +145,7 @@ func main() {
 			}
 
 			applyRHDHFlags()
+			applyMCPGatewayFlags()
 			applyInstanceFlags()
 
 			// addon option flags without an addon list would be dropped
@@ -154,6 +171,7 @@ func main() {
 	createCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring (name=url)")
 	createCmd.Flags().StringVar(&flagAddons, "addons", "", "comma-separated addons to install")
 	addRHDHFlags(createCmd)
+	addMCPGatewayFlags(createCmd)
 	addInstanceFlags(createCmd)
 
 	var flagForce bool
@@ -304,6 +322,7 @@ func main() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := newLogger(flagLogLevel)
 			applyRHDHFlags()
+			applyMCPGatewayFlags()
 			applyInstanceFlags()
 
 			addonArg := ""
@@ -362,6 +381,7 @@ func main() {
 	}
 
 	addRHDHFlags(addonInstallCmd)
+	addMCPGatewayFlags(addonInstallCmd)
 	addInstanceFlags(addonInstallCmd)
 
 	addonCmd.AddCommand(addonListCmd, addonInstallCmd)
