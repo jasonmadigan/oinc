@@ -6,14 +6,22 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const (
-	defaultMCPGatewayChartVersion = "0.1.0"
+	defaultMCPGatewayChartVersion = "0.8.0"
 	mcpGatewayChartOCI            = "oci://ghcr.io/kuadrant/charts/mcp-gateway"
 	mcpGatewayNamespace           = "mcp-gateway-system"
 	mcpGatewayControllerDeploy    = "mcp-gateway-controller"
+	gatewaySystemNamespace        = "gateway-system"
 )
+
+var referenceGrantGVR = schema.GroupVersionResource{
+	Group: "gateway.networking.k8s.io", Version: "v1beta1", Resource: "referencegrants",
+}
 
 func init() { Register(&mcpGateway{}) }
 
@@ -81,6 +89,10 @@ func (m *mcpGateway) Install(ctx context.Context, cfg *Config) error {
 		}
 	}
 
+	if err := m.ensureGatewayPrereqs(ctx, cfg); err != nil {
+		return err
+	}
+
 	cfg.Logger.Info("installing mcp-gateway via helm", "version", m.resolveVersion())
 
 	out, err := exec.CommandContext(ctx, "helm", m.helmArgs()...).CombinedOutput()
@@ -89,6 +101,74 @@ func (m *mcpGateway) Install(ctx context.Context, cfg *Config) error {
 	}
 
 	cfg.Logger.Info("mcp-gateway installed")
+	return nil
+}
+
+// ensureGatewayPrereqs creates the gateway-system namespace, an Istio Gateway,
+// and a ReferenceGrant the chart expects to exist before helm install.
+func (m *mcpGateway) ensureGatewayPrereqs(ctx context.Context, cfg *Config) error {
+	if err := ensureNamespace(ctx, cfg, gatewaySystemNamespace); err != nil {
+		return fmt.Errorf("create %s namespace: %w", gatewaySystemNamespace, err)
+	}
+
+	gw := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "gateway.networking.k8s.io/v1",
+			"kind":       "Gateway",
+			"metadata": map[string]any{
+				"name":      "mcp-gateway",
+				"namespace": gatewaySystemNamespace,
+			},
+			"spec": map[string]any{
+				"gatewayClassName": "istio",
+				"listeners": []any{
+					map[string]any{
+						"name":     "http",
+						"port":     int64(80),
+						"protocol": "HTTP",
+						"allowedRoutes": map[string]any{
+							"namespaces": map[string]any{
+								"from": "All",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ensureResource(ctx, cfg, gatewayGVR, gw); err != nil {
+		return fmt.Errorf("create gateway: %w", err)
+	}
+
+	rg := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "gateway.networking.k8s.io/v1beta1",
+			"kind":       "ReferenceGrant",
+			"metadata": map[string]any{
+				"name":      "mcp-gateway-system-to-gateway-system",
+				"namespace": gatewaySystemNamespace,
+			},
+			"spec": map[string]any{
+				"from": []any{
+					map[string]any{
+						"group":     "gateway.networking.k8s.io",
+						"kind":      "HTTPRoute",
+						"namespace": mcpGatewayNamespace,
+					},
+				},
+				"to": []any{
+					map[string]any{
+						"group": "",
+						"kind":  "Service",
+					},
+				},
+			},
+		},
+	}
+	if err := ensureResource(ctx, cfg, referenceGrantGVR, rg); err != nil {
+		return fmt.Errorf("create referencegrant: %w", err)
+	}
+
 	return nil
 }
 
