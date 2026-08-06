@@ -103,6 +103,7 @@ var addonChecks = []addonCheck{
 	{"metallb", "metallb-system", "controller"},
 	{"istio", "istio-system", "istiod"},
 	{"kuadrant", "kuadrant-system", "kuadrant-operator-controller-manager"},
+	{"mcp-gateway", "mcp-gateway-system", "mcp-gateway-controller"},
 	{"rhdh", "rhdh", "rhdh-developer-hub"},
 }
 

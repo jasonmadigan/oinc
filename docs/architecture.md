@@ -82,7 +82,7 @@ Key design points:
 
 Install methods vary by addon:
 - **Upstream manifests** (gateway-api, cert-manager, metallb): downloaded via curl, applied via `kubectl apply --server-side`
-- **Helm** (istio, kuadrant): `helm upgrade --install` for idempotency
+- **Helm** (istio, kuadrant, rhdh, mcp-gateway): `helm upgrade --install` for idempotency
 
 MicroShift's OLM is present but its bundled catalogue uses an older format incompatible with FBC (File-Based Catalogue) images from OperatorHub. This is why addons use manifests/helm rather than OLM subscriptions.
 
