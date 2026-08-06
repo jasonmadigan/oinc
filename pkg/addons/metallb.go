@@ -93,17 +93,21 @@ func (m *metalLB) Install(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	// restrict metallb to services that opt in via spec.loadBalancerClass.
-	// without this its controller claims every class-less LoadBalancer
-	// service and, having no address pools, clears the status microshift's
-	// built-in service-lb wrote for openshift-ingress/router-default, which
-	// tears down the host port 80/443 bindings Routes rely on. injected into
-	// the manifest before apply so the first pod ever created is already
-	// scoped and server-side apply ownership of the args list keeps the arg
-	// across re-installs.
-	manifest, err = injectLBClassArg(manifest)
-	if err != nil {
-		return fmt.Errorf("scoping metallb to %s: %w", metalLBClass, err)
+	// when no address pool is configured, restrict metallb to services that
+	// opt in via spec.loadBalancerClass. without this its controller claims
+	// every class-less LoadBalancer service and, having no address pools,
+	// clears the status microshift's built-in service-lb wrote for
+	// openshift-ingress/router-default, which tears down the host port
+	// 80/443 bindings Routes rely on.
+	//
+	// when an address pool IS configured, skip the scoping so metallb
+	// manages all LoadBalancer services (including those created by istio
+	// for gateways) without requiring each to opt in.
+	if m.addressPool == "" {
+		manifest, err = injectLBClassArg(manifest)
+		if err != nil {
+			return fmt.Errorf("scoping metallb to %s: %w", metalLBClass, err)
+		}
 	}
 
 	if err := applyManifests(ctx, cfg, manifest); err != nil {
@@ -114,13 +118,15 @@ func (m *metalLB) Install(ctx context.Context, cfg *Config) error {
 	// metallb pods need the privileged SCC to schedule.
 	grantSCC(ctx, cfg, "privileged", "metallb-system", []string{"controller", "speaker"})
 
-	// backstop for clusters deployed before the arg was injected pre-apply
-	arg := "--lb-class=" + metalLBClass
-	if err := ensureContainerArg(ctx, cfg, deploymentGVR, "metallb-system", "controller", "controller", arg); err != nil {
-		return fmt.Errorf("scoping metallb controller to %s: %w", metalLBClass, err)
-	}
-	if err := ensureContainerArg(ctx, cfg, daemonSetGVR, "metallb-system", "speaker", "speaker", arg); err != nil {
-		return fmt.Errorf("scoping metallb speaker to %s: %w", metalLBClass, err)
+	if m.addressPool == "" {
+		// backstop for clusters deployed before the arg was injected pre-apply
+		arg := "--lb-class=" + metalLBClass
+		if err := ensureContainerArg(ctx, cfg, deploymentGVR, "metallb-system", "controller", "controller", arg); err != nil {
+			return fmt.Errorf("scoping metallb controller to %s: %w", metalLBClass, err)
+		}
+		if err := ensureContainerArg(ctx, cfg, daemonSetGVR, "metallb-system", "speaker", "speaker", arg); err != nil {
+			return fmt.Errorf("scoping metallb speaker to %s: %w", metalLBClass, err)
+		}
 	}
 	return nil
 }
