@@ -262,11 +262,6 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		}
 	}
 
-	// origin-console is amd64 only
-	if goruntime.GOARCH == "arm64" {
-		opts.Platform = "linux/amd64"
-	}
-
 	if err := rt.CreateContainer(opts); err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 | `istio` | 1.29.0 (sail) | helm (sail operator) | none |
 | `kuadrant` | 1.4.1 | helm | gateway-api, cert-manager, metallb, istio |
 | `rhdh` | 6.2.2 (chart) | helm | none |
+| `mcp-gateway` | 0.8.0 | helm (OCI) | kuadrant |
 
 ## Install methods
 
@@ -23,13 +24,14 @@ Downloaded via curl and applied via `kubectl apply --server-side --force-conflic
 
 For gateway-api specifically, CRDs are applied via the dynamic k8s client directly (not kubectl) since it only needs to handle CRD resources.
 
-### Helm (istio, kuadrant, rhdh)
+### Helm (istio, kuadrant, rhdh, mcp-gateway)
 
 Uses `helm upgrade --install` for idempotency. Helm must be available in `$PATH`.
 
 - **Istio**: installs the Sail operator from a GitHub release tarball, then creates an `Istio` CR in the `Ready` phase
 - **Kuadrant**: adds the `kuadrant.io` helm repo, installs the operator, then creates a `Kuadrant` CR and waits for it to become ready
 - **RHDH**: adds the `rhdh` helm repo and installs the `rhdh/backstage` chart into the `rhdh` namespace (see below)
+- **MCP Gateway**: installs from the OCI chart at `oci://ghcr.io/kuadrant/charts/mcp-gateway` into the `mcp-gateway-system` namespace; creates a Gateway and ReferenceGrant in `gateway-system` as prerequisites
 
 ## RHDH
 

@@ -124,8 +124,9 @@ The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons
 | `istio` | Istio service mesh via Sail operator | helm |
 | `kuadrant` | API management (rate limiting, auth, DNS) | helm |
 | `rhdh` | Red Hat Developer Hub (Backstage) | helm |
+| `mcp-gateway` | MCP Gateway (AI tool gateway) | helm (OCI) |
 
-Dependencies are resolved automatically. Installing `kuadrant` will pull in `gateway-api`, `cert-manager`, `metallb`, and `istio`.
+Dependencies are resolved automatically. Installing `kuadrant` will pull in `gateway-api`, `cert-manager`, `metallb`, and `istio`. Installing `mcp-gateway` will pull in `kuadrant` and all its dependencies.
 
 ```bash
 # at create time
@@ -221,7 +222,7 @@ The ref is preserved exactly, so `localhost/<name>:<tag>` refs resolve as given.
 - ~4GB RAM available for the container
 - `curl` (for fetching upstream manifests and CRDs)
 - `kubectl` (for cert-manager and metallb addons)
-- `helm` (for istio, kuadrant and rhdh addons)
+- `helm` (for istio, kuadrant, rhdh and mcp-gateway addons)
 
 ## Acknowledgements
 

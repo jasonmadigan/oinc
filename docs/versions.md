@@ -53,13 +53,8 @@ When a new version is added, these things may need updating:
 
 | Component | Where | What to check |
 |-|-|-|
-| Feature gates | `pkg/addons/ingressoperator.go` | Parses `features.go` at install time, so adapts automatically |
-| Config CRDs | `pkg/addons/ingressoperator.go` | Fetched from `openshift/api` at the release branch, adapts automatically |
 | Console CRD | `pkg/oinc/console.go` | Fetched from `openshift/api` at the release branch, adapts automatically |
-| Ingress operator image | `pkg/addons/ingressoperator.go` | Uses `origin-cluster-ingress-operator:{version}`, adapts automatically |
-| Ingress operator manifests | `pkg/addons/ingressoperator.go` | Fetched from `cluster-ingress-operator` at `release-{version}` branch |
-| OSSM/Istio version | `pkg/addons/ingressoperator.go` | `istioVersion` const may need updating if the new OSSM ships a different Istio |
 | Gateway API CRDs | `pkg/addons/gatewayapi.go` | Version pinned independently, not tied to OCP version |
 | Addon versions | `pkg/addons/*.go` | cert-manager, metallb, etc. are pinned independently |
 
-Most things adapt automatically because they derive URLs from the version's `APIBranch` field. The main thing to watch is the `istioVersion` const in the ingress operator addon.
+Most things adapt automatically because they derive URLs from the version's `APIBranch` field.
