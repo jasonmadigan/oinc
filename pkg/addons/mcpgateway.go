@@ -123,7 +123,7 @@ func (m *mcpGateway) ensureGatewayPrereqs(ctx context.Context, cfg *Config) erro
 				"gatewayClassName": "istio",
 				"listeners": []any{
 					map[string]any{
-						"name":     "http",
+						"name":     "mcp",
 						"port":     int64(80),
 						"protocol": "HTTP",
 						"allowedRoutes": map[string]any{
