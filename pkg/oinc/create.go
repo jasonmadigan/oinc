@@ -101,12 +101,13 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 				return rt.StartContainer(containerName)
 			}
 			copts := runtime.ContainerOpts{
-				Name:       containerName,
-				Image:      ver.MicroShiftImage(),
-				Hostname:   hostname,
-				Privileged: true,
-				Platform:   ver.Platform(),
-				Labels:     map[string]string{labelKey: containerName},
+				Name:             containerName,
+				Image:            ver.MicroShiftImage(),
+				Hostname:         hostname,
+				Privileged:       true,
+				NestedContainers: true,
+				Platform:         ver.Platform(),
+				Labels:           map[string]string{labelKey: containerName},
 				Ports: []runtime.PortMapping{
 					{Host: opts.HTTPPort, Container: 80},
 					{Host: opts.HTTPSPort, Container: 443},
@@ -203,12 +204,13 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 	} else {
 		logger.Info("creating container")
 		copts := runtime.ContainerOpts{
-			Name:       containerName,
-			Image:      image,
-			Hostname:   hostname,
-			Privileged: true,
-			Platform:   platform,
-			Labels:     map[string]string{labelKey: containerName},
+			Name:             containerName,
+			Image:            image,
+			Hostname:         hostname,
+			Privileged:       true,
+			NestedContainers: true,
+			Platform:         platform,
+			Labels:           map[string]string{labelKey: containerName},
 			Ports: []runtime.PortMapping{
 				{Host: opts.HTTPPort, Container: 80},
 				{Host: opts.HTTPSPort, Container: 443},

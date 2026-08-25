@@ -4,16 +4,105 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/yaml"
 )
+
+func fakeGatewayAPIManifestDownload(t *testing.T, manifest string) string {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "curl-args")
+	curl := filepath.Join(dir, "curl")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$OINC_TEST_CURL_ARGS"
+printf '%s' "$OINC_TEST_GATEWAY_API_MANIFEST"
+`
+	if err := os.WriteFile(curl, []byte(script), 0o700); err != nil {
+		t.Fatalf("writing fake curl: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("OINC_TEST_CURL_ARGS", argsFile)
+	t.Setenv("OINC_TEST_GATEWAY_API_MANIFEST", manifest)
+	return argsFile
+}
+
+func TestGatewayAPIDefaultInstallUsesMCPGatewayCompatibleCRDs(t *testing.T) {
+	argsFile := fakeGatewayAPIManifestDownload(t, `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: httproutes.gateway.networking.k8s.io
+`)
+
+	cfg := &Config{
+		DynamicClient: dynamicfake.NewSimpleDynamicClient(kscheme.Scheme),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if err := (&gatewayAPI{}).Install(context.Background(), cfg); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading fake curl arguments: %v", err)
+	}
+	want := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml"
+	if !strings.Contains(string(args), want) {
+		t.Errorf("curl arguments = %q, want manifest URL %q", args, want)
+	}
+}
+
+func TestGatewayAPIInstallUpdatesExistingCRDs(t *testing.T) {
+	fakeGatewayAPIManifestDownload(t, `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: httproutes.gateway.networking.k8s.io
+  annotations:
+    test.oinc/manifest: new
+`)
+
+	client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+	old := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1",
+		"kind":       "CustomResourceDefinition",
+		"metadata": map[string]any{
+			"name":        "httproutes.gateway.networking.k8s.io",
+			"annotations": map[string]any{"test.oinc/manifest": "old"},
+		},
+	}}
+	if _, err := client.Resource(schema.GroupVersionResource{
+		Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions",
+	}).Create(context.Background(), old, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seeding old CRD: %v", err)
+	}
+
+	cfg := &Config{
+		DynamicClient: client,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if err := (&gatewayAPI{}).Install(context.Background(), cfg); err != nil {
+		t.Fatalf("Install over existing CRD: %v", err)
+	}
+
+	got, err := client.Resource(schema.GroupVersionResource{
+		Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions",
+	}).Get(context.Background(), old.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting updated CRD: %v", err)
+	}
+	if marker := got.GetAnnotations()["test.oinc/manifest"]; marker != "new" {
+		t.Errorf("updated CRD marker = %q, want new", marker)
+	}
+}
 
 // the gateway instance cannot be programmed before istio exists or get an
 // address before metallb does, so the option must pull both in ahead of it.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 )
@@ -84,13 +85,15 @@ func newRuntime(binary string) (*Runtime, error) {
 
 func (r *Runtime) Name() string { return r.binary }
 
+func (r *Runtime) isPodman() bool { return filepath.Base(r.binary) == "podman" }
+
 // ContainerHostAddress returns the hostname the sidecar containers should use
 // to reach services on the host.
 func (r *Runtime) ContainerHostAddress() string {
 	if goruntime.GOOS == "linux" && !RunningInWSL() {
 		return "localhost"
 	}
-	if r.binary == "podman" {
+	if r.isPodman() {
 		return "host.containers.internal"
 	}
 	return "host.docker.internal"

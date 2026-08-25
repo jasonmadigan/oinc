@@ -8,7 +8,7 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 
 | Addon | Default version | Install method | Dependencies |
 |-|-|-|-|
-| `gateway-api` | 1.2.1 | upstream CRD manifests | none (istio, metallb with `--gateway-api-gateway`) |
+| `gateway-api` | 1.4.1 | upstream CRD manifests | none (istio, metallb with `--gateway-api-gateway`) |
 | `cert-manager` | 1.17.1 | upstream manifests | none |
 | `metallb` | 0.14.9 | upstream manifests | none |
 | `istio` | 1.29.0 (sail) | helm (sail operator) | none |
@@ -23,6 +23,22 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 Downloaded via curl and applied via `kubectl apply --server-side --force-conflicts`. Curl is used instead of Go's `net/http` because Go's network stack breaks inside privileged containers on macOS.
 
 For gateway-api specifically, CRDs are applied via the dynamic k8s client directly (not kubectl) since it only needs to handle CRD resources.
+
+Gateway API 1.4.1 is the default because it matches MCP Gateway and includes the HTTPRoute rule-name schema that its controller-generated routes use. A fresh addon install downloads the `v1.4.1` standard manifest. Another Gateway API generation can still be selected with the normal addon version syntax, for example `gateway-api@1.2.1`.
+
+### Upgrading Gateway API on an existing cluster
+
+The gateway-api install path upgrades existing CRDs: it fetches the selected standard manifest and updates each CRD in place using its current Kubernetes `resourceVersion`. The non-interactive CLI path always runs that install logic, so this command forces stdout to be non-interactive while leaving progress and errors visible on stderr:
+
+```bash
+oinc addon install gateway-api >/dev/null
+```
+
+After the command succeeds, the existing Gateway API CRDs have been updated to the current default (`v1.4.1`). There is one CLI distinction to be aware of: with stdout attached to a terminal, `oinc addon install` uses the interactive step planner, which skips addons already reported ready. In that mode, a plain rerun can print `All requested addons are already installed` without reapplying the CRDs; use the non-interactive invocation above when updating an existing ready installation.
+
+Updating the CRDs does not guarantee recovery of MCP resources that were already reconciled while the `v1.2.1` structural schema was pruning HTTPRoute rule names. In the affected environment used to verify this upgrade, the MCP Gateway controller restored the names on its managed HTTPRoute, but the existing `MCPServerRegistration` remained `Ready=False` and the gateway continued to report zero servers. Annotating or recreating the registration, restarting the controller, and recreating the `MCPGatewayExtension` did not repair that stale environment.
+
+There is therefore no verified surgical recovery for an MCP environment created with the old CRDs. For a working MCP Gateway, upgrade the oinc binary first, then recreate the disposable oinc cluster with the same addon and instance options and reapply the MCP example resources. Back up anything that must survive before running `oinc delete --force`; a newly created cluster installs `v1.4.1` before MCP Gateway reconciles its resources.
 
 ### Helm (istio, kuadrant, rhdh, mcp-gateway)
 

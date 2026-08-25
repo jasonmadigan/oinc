@@ -4,6 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -166,6 +169,68 @@ spec:
         args:
         - --port=7472
 `
+
+func fakeMetalLBInstallCommands(t *testing.T, manifest string) string {
+	t.Helper()
+	dir := t.TempDir()
+	appliedFile := filepath.Join(dir, "applied-manifest")
+
+	commands := map[string]string{
+		"curl": `#!/bin/sh
+printf '%s' "$OINC_TEST_METALLB_MANIFEST"
+`,
+		"kubectl": `#!/bin/sh
+cat > "$OINC_TEST_APPLIED_MANIFEST"
+`,
+	}
+	for name, script := range commands {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			t.Fatalf("writing fake %s: %v", name, err)
+		}
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("OINC_TEST_METALLB_MANIFEST", manifest)
+	t.Setenv("OINC_TEST_APPLIED_MANIFEST", appliedFile)
+	return appliedFile
+}
+
+// A configured address pool does not make a custom-class service class-less:
+// the Istio gateway service still opts into oinc.io/metallb, so the controller
+// and speaker must keep the matching --lb-class argument.
+func TestMetalLBInstallScopesComponentsWhenAddressPoolConfigured(t *testing.T) {
+	appliedFile := fakeMetalLBInstallCommands(t, lbClassFixture)
+	client := dynamicfake.NewSimpleDynamicClient(
+		kscheme.Scheme,
+		fakeWorkload("Deployment", "controller", map[string]any{"name": "controller", "args": []any{"--port=7472"}}),
+		fakeWorkload("DaemonSet", "speaker", map[string]any{"name": "speaker", "args": []any{"--port=7472"}}),
+	)
+	cfg := &Config{
+		Kubeconfig:    []byte("apiVersion: v1\n"),
+		DynamicClient: client,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := (&metalLB{addressPool: "auto"}).Install(context.Background(), cfg); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	applied, err := os.ReadFile(appliedFile)
+	if err != nil {
+		t.Fatalf("reading applied manifest: %v", err)
+	}
+
+	arg := "--lb-class=" + metalLBClass
+	for _, tt := range []struct {
+		kind, name, container string
+	}{
+		{"Deployment", "controller", "controller"},
+		{"DaemonSet", "speaker", "speaker"},
+	} {
+		if args := manifestArgs(t, applied, tt.kind, tt.name, tt.container); !slices.Contains(args, arg) {
+			t.Errorf("%s/%s container %s args = %v, want %q", tt.kind, tt.name, tt.container, args, arg)
+		}
+	}
+}
 
 func manifestArgs(t *testing.T, manifest []byte, kind, name, container string) []string {
 	t.Helper()

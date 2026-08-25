@@ -16,16 +16,17 @@ import (
 )
 
 type ContainerOpts struct {
-	Name       string
-	Image      string
-	Hostname   string
-	Labels     map[string]string
-	Ports      []PortMapping
-	Volumes    []string
-	Privileged bool
-	Platform   string
-	Env        map[string]string
-	Network    string // e.g. "host" for --network=host
+	Name             string
+	Image            string
+	Hostname         string
+	Labels           map[string]string
+	Ports            []PortMapping
+	Volumes          []string
+	Privileged       bool
+	NestedContainers bool // the container runs its own container runtime
+	Platform         string
+	Env              map[string]string
+	Network          string // e.g. "host" for --network=host
 }
 
 type PortMapping struct {
@@ -50,6 +51,15 @@ func (r *Runtime) PullImage(image string, platform string) error {
 
 func (r *Runtime) CreateContainer(opts ContainerOpts) error {
 	args := []string{"create"}
+	if r.isPodman() {
+		args = append(args, "--log-driver=k8s-file")
+		if opts.NestedContainers {
+			// containers/storage recommends a separate backing mount when a
+			// container runtime runs inside Podman. MicroShift's own Podman
+			// cluster manager uses this tmpfs to avoid nested storage drivers.
+			args = append(args, "--tmpfs=/var/lib/containers")
+		}
+	}
 
 	if opts.Hostname != "" {
 		args = append(args, "--hostname", opts.Hostname)

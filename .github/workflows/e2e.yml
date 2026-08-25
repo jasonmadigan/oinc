@@ -37,11 +37,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install podman
+      - name: Verify podman
         if: matrix.runtime == 'podman'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
+          uname -a
+          command -v podman
+          podman --version
+          sudo podman info --format 'OCI runtime: {{.Host.OCIRuntime.Path}}'
 
       - name: Vet, test, build
         run: |
@@ -51,13 +53,14 @@ jobs:
 
       - name: Create cluster
         run: '"$PREFIX" bin/oinc create --version 4.22 --runtime "$CR"'
+        timeout-minutes: 10
 
       - name: Assert skopeo ships in the oinc image
         run: '"$PREFIX" "$CR" exec oinc sh -c "command -v skopeo"'
 
       - name: Reject a ref missing host-side
         run: |
-          ! "$PREFIX" bin/oinc load-image localhost/oinc-e2e:absent
+          ! "$PREFIX" bin/oinc load-image --runtime "$CR" localhost/oinc-e2e:absent
 
       - name: Build a trivial local image
         run: |
@@ -67,7 +70,7 @@ jobs:
           EOF
 
       - name: Load the image into the cluster
-        run: '"$PREFIX" bin/oinc load-image localhost/oinc-e2e:smoke'
+        run: '"$PREFIX" bin/oinc load-image --runtime "$CR" localhost/oinc-e2e:smoke'
 
       - name: Run a pod from the loaded image
         run: |
@@ -79,16 +82,19 @@ jobs:
           "$PREFIX" kubectl --context oinc wait pod/e2e-smoke --for=condition=Ready --timeout=180s
 
       - name: Re-load the same image (idempotence)
-        run: '"$PREFIX" bin/oinc load-image localhost/oinc-e2e:smoke'
+        run: '"$PREFIX" bin/oinc load-image --runtime "$CR" localhost/oinc-e2e:smoke'
 
       - name: Dump state on failure
         if: failure()
         run: |
-          "$PREFIX" "$CR" ps -a || true
-          "$PREFIX" "$CR" logs oinc --tail 100 || true
-          "$PREFIX" "$CR" exec oinc crictl images || true
-          "$PREFIX" kubectl --context oinc get pods -A || true
-          "$PREFIX" kubectl --context oinc describe pod e2e-smoke || true
+          "$PREFIX" timeout 15s "$CR" ps -a || true
+          "$PREFIX" timeout 15s "$CR" logs --tail 100 oinc || true
+          "$PREFIX" timeout 15s "$CR" exec oinc crictl images || true
+          "$PREFIX" timeout 15s "$CR" exec oinc journalctl -u crio --no-pager -n 100 || true
+          "$PREFIX" timeout 15s kubectl --context oinc get pods -A || true
+          "$PREFIX" timeout 15s kubectl --context oinc get events -A --sort-by=.lastTimestamp || true
+          "$PREFIX" timeout 15s kubectl --context oinc describe pods -A || true
+          "$PREFIX" timeout 15s kubectl --context oinc describe pod e2e-smoke || true
 
   # addon instance options: portal-enabled kuadrant CR, metallb address pool,
   # default gateway. the kuadrant chain is heavy, so a single docker leg with

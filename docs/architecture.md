@@ -27,6 +27,8 @@ Single `Runtime` struct (`pkg/runtime/`) wraps docker or podman. Auto-detected a
 
 On Linux, validates cgroup v2 and rootful mode. On macOS, skips validation (Docker Desktop / Podman Desktop handle this).
 
+Podman containers explicitly use the `k8s-file` log driver so they do not depend on the host's `conmon` build including journald support. The MicroShift node also mounts `/var/lib/containers` as tmpfs, matching MicroShift's own Podman cluster manager and avoiding nested container-storage driver failures.
+
 Container host address varies by runtime:
 - docker on macOS: `host.docker.internal`
 - podman on macOS: `host.containers.internal`
@@ -81,7 +83,7 @@ Key design points:
 - Version pinning via `Configurable` interface and `@` syntax (e.g. `cert-manager@1.16.0`)
 
 Install methods vary by addon:
-- **Upstream manifests** (gateway-api, cert-manager, metallb): downloaded via curl, applied via `kubectl apply --server-side`
+- **Upstream manifests** (gateway-api, cert-manager, metallb): downloaded via curl; cert-manager and metallb use `kubectl apply --server-side`, while gateway-api updates its CRDs through the dynamic Kubernetes client
 - **Helm** (istio, kuadrant, rhdh, mcp-gateway): `helm upgrade --install` for idempotency
 
 MicroShift's OLM is present but its bundled catalogue uses an older format incompatible with FBC (File-Based Catalogue) images from OperatorHub. This is why addons use manifests/helm rather than OLM subscriptions.

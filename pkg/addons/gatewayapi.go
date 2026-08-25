@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultGatewayAPIVersion = "1.2.1"
+	defaultGatewayAPIVersion = "1.4.1"
 	gatewayNamespace         = "gateway-system"
 	gatewayName              = "kuadrant-ingressgateway"
 	gatewayInfraParams       = "kuadrant-ingressgateway-params"

@@ -17,7 +17,7 @@ Builds MicroShift container images. **Manual dispatch only** (`workflow_dispatch
 
 End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurrency-cancelling superseded runs on the same ref. Docs-only changes (`*.md`, `docs/`) skip it.
 
-- Matrix over host runtime: docker and podman (podman leg runs rootful via sudo)
+- Matrix over host runtime: docker and podman on `ubuntu-latest` (the podman leg runs rootful via sudo)
 - Runs `go vet`, `go test`, builds the CLI
 - Creates a cluster with a pinned catalogue version
 - Asserts skopeo is present in the oinc image
