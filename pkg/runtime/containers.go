@@ -27,6 +27,7 @@ type ContainerOpts struct {
 	Platform         string
 	Env              map[string]string
 	Network          string // e.g. "host" for --network=host
+	ExtraHosts       map[string]string
 }
 
 type PortMapping struct {
@@ -75,6 +76,15 @@ func (r *Runtime) CreateContainer(opts ContainerOpts) error {
 
 	if opts.Network != "" {
 		args = append(args, "--network", opts.Network)
+	}
+
+	hostnames := make([]string, 0, len(opts.ExtraHosts))
+	for hostname := range opts.ExtraHosts {
+		hostnames = append(hostnames, hostname)
+	}
+	sort.Strings(hostnames)
+	for _, hostname := range hostnames {
+		args = append(args, "--add-host", fmt.Sprintf("%s:%s", hostname, opts.ExtraHosts[hostname]))
 	}
 
 	for _, p := range opts.Ports {
