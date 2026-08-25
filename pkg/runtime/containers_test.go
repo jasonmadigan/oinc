@@ -1,6 +1,11 @@
 package runtime
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 const dockerBridgeInspect = `[
   {
@@ -104,5 +109,35 @@ func TestSubnetFromInspectErrors(t *testing.T) {
 				t.Error("expected error")
 			}
 		})
+	}
+}
+
+func TestCreateContainerConfiguresPodmanForNestedContainers(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	fakePodman := filepath.Join(dir, "podman")
+	if err := os.WriteFile(fakePodman, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OINC_TEST_ARGS\"\n"), 0o755); err != nil {
+		t.Fatalf("writing fake podman: %v", err)
+	}
+	t.Setenv("OINC_TEST_ARGS", argsPath)
+
+	rt := &Runtime{binary: fakePodman}
+	if err := rt.CreateContainer(ContainerOpts{
+		Name:             "oinc",
+		Image:            "example.test/oinc:latest",
+		NestedContainers: true,
+	}); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("reading podman arguments: %v", err)
+	}
+	if !strings.Contains(string(args), "\n--log-driver=k8s-file\n") {
+		t.Fatalf("podman arguments did not select k8s-file logging:\n%s", args)
+	}
+	if !strings.Contains(string(args), "\n--tmpfs=/var/lib/containers\n") {
+		t.Fatalf("podman arguments did not isolate nested container storage:\n%s", args)
 	}
 }
