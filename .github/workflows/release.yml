@@ -37,15 +37,18 @@ jobs:
             done
           done
 
-      - name: Create or update release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ github.ref_name }}"
           if gh release view "$tag" &>/dev/null; then
-            gh release upload "$tag" dist/* --clobber
-          else
-            gh release create "$tag" dist/* \
-              --title "$tag" \
-              --generate-notes
+            echo "::error::Release $tag already exists; published releases must not be overwritten"
+            exit 1
           fi
+          gh release create "$tag" dist/* \
+            --draft \
+            --verify-tag \
+            --title "$tag" \
+            --generate-notes
+          gh release edit "$tag" --draft=false
