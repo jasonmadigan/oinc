@@ -29,11 +29,11 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 
 ## Supported versions
 
-| OCP | MicroShift | Console | Architectures |
-|-|-|-|-|
-| 4.22 (default) | 4.22.0-okd-scos.ec.16 | 4.22 | amd64, arm64 |
-| 4.21 | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
-| 4.20 | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
+| OCP            | MicroShift            | Console | Architectures |
+| -------------- | --------------------- | ------- | ------------- |
+| 4.22 (default) | 4.22.0-okd-scos.ec.16 | 4.22    | amd64, arm64  |
+| 4.21           | 4.21.0-okd-scos.ec.15 | 4.21    | amd64, arm64  |
+| 4.20           | 4.20.0-okd-scos.16    | 4.20    | amd64, arm64  |
 
 Use `/add-version` in Claude Code to add a new version, or see [docs/images.md](docs/images.md) for the manual process.
 
@@ -79,6 +79,11 @@ oinc create --addons cert-manager@1.16.0,metallb@0.14.8
 # wire in a console plugin dev server
 oinc create --console-plugin "my-plugin=http://host.docker.internal:9001"
 
+# after the plugin operator creates a ConsolePlugin with service proxies,
+# restart the standalone dev Console with those proxies
+oinc console sync-plugin-proxy my-plugin \
+  --console-plugin "my-plugin=http://host.docker.internal:9001"
+
 # cluster status
 oinc status
 
@@ -116,15 +121,15 @@ Commands show styled progress in a terminal (spinners, checkmarks, boxed output)
 
 The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons layer extra infrastructure on top:
 
-| Addon | What it provides | Install method |
-|-|-|-|
-| `gateway-api` | Kubernetes Gateway API CRDs | upstream CRDs (k8s client) |
-| `cert-manager` | Certificate management | upstream manifests (kubectl) |
-| `metallb` | LoadBalancer IP allocation | upstream manifests (kubectl) |
-| `istio` | Istio service mesh via Sail operator | helm |
-| `kuadrant` | API management (rate limiting, auth, DNS) | helm |
-| `rhdh` | Red Hat Developer Hub (Backstage) | helm |
-| `mcp-gateway` | MCP Gateway (AI tool gateway) | helm (OCI) |
+| Addon          | What it provides                          | Install method               |
+| -------------- | ----------------------------------------- | ---------------------------- |
+| `gateway-api`  | Kubernetes Gateway API CRDs               | upstream CRDs (k8s client)   |
+| `cert-manager` | Certificate management                    | upstream manifests (kubectl) |
+| `metallb`      | LoadBalancer IP allocation                | upstream manifests (kubectl) |
+| `istio`        | Istio service mesh via Sail operator      | helm                         |
+| `kuadrant`     | API management (rate limiting, auth, DNS) | helm                         |
+| `rhdh`         | Red Hat Developer Hub (Backstage)         | helm                         |
+| `mcp-gateway`  | MCP Gateway (AI tool gateway)             | helm (OCI)                   |
 
 Dependencies are resolved automatically. Installing `kuadrant` will pull in `gateway-api`, `cert-manager`, `metallb`, and `istio`. Installing `mcp-gateway` will pull in `kuadrant` and all its dependencies.
 
@@ -207,13 +212,35 @@ oinc load-image localhost/my-image:dev
 
 The ref is preserved exactly, so `localhost/<name>:<tag>` refs resolve as given. Re-running with the same ref succeeds. Works with docker or podman as the host runtime; the command picks whichever one owns the running cluster.
 
+## Console plugin service proxies
+
+On a real OpenShift cluster, the Console operator translates a dynamic plugin's
+`ConsolePlugin.spec.proxy` entries into Bridge configuration. OINC runs its
+Console as a standalone development container, so it does not have that
+reconciliation layer.
+
+After installing or rebuilding an operator that reconciles service proxies, run:
+
+```bash
+oinc console sync-plugin-proxy <ConsolePlugin-name> \
+  --console-plugin "<plugin-name>=http://host.docker.internal:<dev-server-port>"
+```
+
+The command reads `ConsolePlugin.spec.proxy`, creates OINC-only LoadBalancer
+shadow Services so the Console container can reach the in-cluster backends,
+mounts the OpenShift service CA, and restarts the standalone Console. It does
+not change the product deployment contract: the plugin operator remains the
+source of truth for the backend Service and `ConsolePlugin` resource. The
+`metallb` addon must have an address pool; `--metallb-address-pool auto` is the
+simplest development setup. Reload the browser after the Console restarts.
+
 ## Ports
 
-| Port | Service |
-|-|-|
-| `6443` | Kubernetes API server |
-| `9000` | OpenShift Console |
-| `9080` | Ingress HTTP (Routes, Gateway API) |
+| Port   | Service                             |
+| ------ | ----------------------------------- |
+| `6443` | Kubernetes API server               |
+| `9000` | OpenShift Console                   |
+| `9080` | Ingress HTTP (Routes, Gateway API)  |
 | `9443` | Ingress HTTPS (Routes, Gateway API) |
 
 ## Requirements

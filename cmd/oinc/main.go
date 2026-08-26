@@ -285,6 +285,35 @@ func main() {
 	switchCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
 	switchCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring (name=url)")
 
+	consoleCmd := &cobra.Command{
+		Use:   "console",
+		Short: "Manage the development Console",
+	}
+
+	consoleSyncCmd := &cobra.Command{
+		Use:   "sync-plugin-proxy <ConsolePlugin name>",
+		Short: "Restart Console with the proxy configuration reconciled by a plugin operator",
+		Long: "Translate a ConsolePlugin.spec.proxy into standalone Bridge configuration. " +
+			"This is only needed in OINC because its development Console is not managed by the OpenShift Console operator.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if flagConsPlugin == "" {
+				return fmt.Errorf("--console-plugin is required so Console can keep serving the plugin assets")
+			}
+			return oinc.SyncConsolePluginProxy(
+				cmd.Context(),
+				flagRuntime,
+				args[0],
+				flagConsPlugin,
+				flagConsolePort,
+				newLogger(flagLogLevel),
+			)
+		},
+	}
+	consoleSyncCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
+	consoleSyncCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring to preserve (name=url)")
+	consoleCmd.AddCommand(consoleSyncCmd)
+
 	addonCmd := &cobra.Command{
 		Use:   "addon",
 		Short: "Manage addons",
@@ -406,7 +435,7 @@ func main() {
 		},
 	}
 
-	root.AddCommand(createCmd, deleteCmd, statusCmd, versionCmd, switchCmd, addonCmd, kubeconfigCmd, loadImageCmd)
+	root.AddCommand(createCmd, deleteCmd, statusCmd, versionCmd, switchCmd, consoleCmd, addonCmd, kubeconfigCmd, loadImageCmd)
 
 	// suppress usage on RunE errors -- the TUI already shows what went wrong
 	root.SilenceUsage = true

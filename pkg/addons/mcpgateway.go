@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	defaultMCPGatewayChartVersion = "0.8.0"
-	mcpGatewayChartOCI            = "oci://ghcr.io/kuadrant/charts/mcp-gateway"
-	mcpGatewayNamespace           = "mcp-gateway-system"
-	mcpGatewayControllerDeploy    = "mcp-gateway-controller"
-	gatewaySystemNamespace        = "gateway-system"
+	defaultMCPGatewayChartVersion       = "0.8.0"
+	mcpGatewayChartOCI                  = "oci://ghcr.io/kuadrant/charts/mcp-gateway"
+	mcpGatewayNamespace                 = "mcp-gateway-system"
+	mcpGatewayControllerDeploy          = "mcp-gateway-controller"
+	gatewaySystemNamespace              = "gateway-system"
+	mcpGatewayListenerPort        int64 = 80
 )
 
 var referenceGrantGVR = schema.GroupVersionResource{
@@ -76,6 +77,7 @@ func (m *mcpGateway) helmArgs() []string {
 		args = append(args, "--values", m.valuesFile)
 	}
 	args = append(args, m.chartVersionArgs()...)
+	args = append(args, "--set", fmt.Sprintf("gateway.port=%d", mcpGatewayListenerPort))
 	return append(args, "--wait", "--timeout", "5m")
 }
 
@@ -125,7 +127,7 @@ func (m *mcpGateway) ensureGatewayPrereqs(ctx context.Context, cfg *Config) erro
 				"listeners": []any{
 					map[string]any{
 						"name":     "mcp",
-						"port":     int64(80),
+						"port":     mcpGatewayListenerPort,
 						"protocol": "HTTP",
 						"allowedRoutes": map[string]any{
 							"namespaces": map[string]any{
