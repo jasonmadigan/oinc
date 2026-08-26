@@ -98,9 +98,9 @@ func TestConsoleProxyServiceName(t *testing.T) {
 		},
 		{
 			name:       "normalizes unsupported characters",
-			pluginName: "Example_Plugin",
-			alias:      "MCP.Backend",
-			want:       "oinc-example-plugin-mcp-backend-825aa9fc",
+			pluginName: "example-plugin",
+			alias:      "MCP_Backend",
+			want:       "oinc-example-plugin-mcp-backend-4a6d22b3",
 		},
 		{
 			name:       "long names have a stable collision-resistant suffix",
@@ -124,10 +124,22 @@ func TestConsoleProxyServiceName(t *testing.T) {
 }
 
 func TestConsoleProxyServiceNameAvoidsNormalizationCollisions(t *testing.T) {
-	withUnderscore := consoleProxyServiceName("example-plugin", "mcp_backend")
-	withDash := consoleProxyServiceName("example-plugin", "mcp-backend")
-	if withUnderscore == withDash {
-		t.Fatalf("distinct aliases produced the same Service name %q", withUnderscore)
+	tests := []struct {
+		name  string
+		left  string
+		right string
+	}{
+		{name: "normalization", left: "mcp_backend", right: "mcp-backend"},
+		{name: "case", left: "Backend", right: "backend"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			left := consoleProxyServiceName("example-plugin", tt.left)
+			right := consoleProxyServiceName("example-plugin", tt.right)
+			if left == right {
+				t.Fatalf("distinct aliases %q and %q produced the same Service name %q", tt.left, tt.right, left)
+			}
+		})
 	}
 }
 

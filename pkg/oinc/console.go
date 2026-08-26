@@ -516,8 +516,8 @@ func ensureConsoleProxyLoadBalancer(ctx context.Context, client kubernetes.Inter
 }
 
 func consoleProxyServiceName(pluginName, alias string) string {
-	rawName := strings.ToLower("oinc-" + pluginName + "-" + alias)
-	name := rawName
+	identity := "oinc-" + pluginName + "-" + alias
+	name := strings.ToLower(identity)
 	name = strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
 			return r
@@ -525,8 +525,8 @@ func consoleProxyServiceName(pluginName, alias string) string {
 		return '-'
 	}, name)
 	name = strings.Trim(name, "-")
-	if name != rawName || len(name) > 63 {
-		digest := sha256.Sum256([]byte(rawName))
+	if name != identity || len(name) > 63 {
+		digest := sha256.Sum256([]byte(identity))
 		if len(name) > 54 {
 			name = name[:54]
 		}
