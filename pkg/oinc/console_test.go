@@ -289,3 +289,41 @@ func TestBuildConsoleProxyOptions(t *testing.T) {
 		t.Errorf("reconciled ports = %#v, want current backend Service port", updated.Spec.Ports)
 	}
 }
+
+func TestBuildConsoleProxyOptionsClearsRemovedProxies(t *testing.T) {
+	const pluginName = "kuadrant-console-plugin"
+	plugin := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "console.openshift.io/v1",
+		"kind":       "ConsolePlugin",
+		"metadata": map[string]any{
+			"name": pluginName,
+		},
+		"spec": map[string]any{},
+	}}
+
+	options, err := buildConsoleProxyOptionsWithCAWriter(
+		context.Background(),
+		kubefake.NewClientset(),
+		dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(), plugin),
+		pluginName,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		func(map[string]struct{}) (string, error) {
+			t.Fatal("CA writer called with no proxy entries")
+			return "", nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("buildConsoleProxyOptionsWithCAWriter() error = %v", err)
+	}
+	if options.caFile != "" || len(options.extraHosts) != 0 {
+		t.Errorf("empty proxy options = %#v, want no CA file or extra hosts", options)
+	}
+
+	var config bridgePluginProxy
+	if err := json.Unmarshal([]byte(options.config), &config); err != nil {
+		t.Fatalf("decoding generated Bridge config: %v", err)
+	}
+	if config.Services == nil || len(config.Services) != 0 {
+		t.Errorf("generated proxy services = %#v, want an explicit empty list", config.Services)
+	}
+}

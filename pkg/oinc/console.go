@@ -377,12 +377,12 @@ func buildConsoleProxyOptionsWithCAWriter(ctx context.Context, client kubernetes
 	if err != nil {
 		return nil, fmt.Errorf("reading ConsolePlugin proxies: %w", err)
 	}
-	if !found || len(proxyEntries) == 0 {
-		return nil, fmt.Errorf("ConsolePlugin %s has no spec.proxy entries", pluginName)
+	if !found {
+		proxyEntries = []any{}
 	}
 
 	result := &consoleProxyOptions{extraHosts: map[string]string{}}
-	proxyConfig := bridgePluginProxy{}
+	proxyConfig := bridgePluginProxy{Services: []bridgePluginProxyService{}}
 	caBundles := map[string]struct{}{}
 	for _, rawEntry := range proxyEntries {
 		entry, ok := rawEntry.(map[string]any)
