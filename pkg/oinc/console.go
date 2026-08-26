@@ -58,6 +58,7 @@ type bridgePluginProxyService struct {
 	ConsoleAPIPath string `json:"consoleAPIPath"`
 	Endpoint       string `json:"endpoint"`
 	Authorize      bool   `json:"authorize,omitempty"`
+	CACertificate  string `json:"caCertificate,omitempty"`
 }
 
 func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion, consolePort int, consolePlugin string, logger *slog.Logger) error {
@@ -275,7 +276,9 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 	}
 	if proxyOptions != nil {
 		env["BRIDGE_PLUGIN_PROXY"] = proxyOptions.config
-		env["BRIDGE_SERVICE_CA_FILE"] = consoleProxyCAPath
+		if proxyOptions.caFile != "" {
+			env["BRIDGE_SERVICE_CA_FILE"] = consoleProxyCAPath
+		}
 	}
 
 	opts := runtime.ContainerOpts{
@@ -285,7 +288,9 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 	}
 	if proxyOptions != nil {
 		opts.ExtraHosts = proxyOptions.extraHosts
-		opts.Volumes = append(opts.Volumes, proxyOptions.caFile+":"+consoleProxyCAPath+":ro")
+		if proxyOptions.caFile != "" {
+			opts.Volumes = append(opts.Volumes, proxyOptions.caFile+":"+consoleProxyCAPath+":ro")
+		}
 	}
 
 	// linux: use host networking so the console can reach localhost services
@@ -334,7 +339,7 @@ func SyncConsolePluginProxy(ctx context.Context, runtimeOverride, pluginName, co
 	if err != nil {
 		return err
 	}
-	status := GetStatus(runtimeOverride)
+	status := GetStatus(rt.Name())
 	if status.Version == "" {
 		return fmt.Errorf("could not determine the running OCP version")
 	}
@@ -360,6 +365,10 @@ func SyncConsolePluginProxy(ctx context.Context, runtimeOverride, pluginName, co
 }
 
 func buildConsoleProxyOptions(ctx context.Context, client kubernetes.Interface, dynClient dynamic.Interface, pluginName string, logger *slog.Logger) (*consoleProxyOptions, error) {
+	return buildConsoleProxyOptionsWithCAWriter(ctx, client, dynClient, pluginName, logger, writeConsoleServiceCA)
+}
+
+func buildConsoleProxyOptionsWithCAWriter(ctx context.Context, client kubernetes.Interface, dynClient dynamic.Interface, pluginName string, logger *slog.Logger, writeCA func(map[string]struct{}) (string, error)) (*consoleProxyOptions, error) {
 	plugin, err := dynClient.Resource(consolePluginGVR).Get(ctx, pluginName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting ConsolePlugin %s: %w", pluginName, err)
@@ -396,22 +405,24 @@ func buildConsoleProxyOptions(ctx context.Context, client kubernetes.Interface, 
 		}
 		serviceHost := fmt.Sprintf("%s.%s.svc", serviceName, namespace)
 		result.extraHosts[serviceHost] = externalIP
-		proxyConfig.Services = append(proxyConfig.Services, bridgePluginProxyService{
+		proxyService := bridgePluginProxyService{
 			ConsoleAPIPath: fmt.Sprintf("/api/proxy/plugin/%s/%s/", pluginName, alias),
 			Endpoint:       fmt.Sprintf("https://%s:%d/", serviceHost, port),
 			Authorize:      authorization == "UserToken",
-		})
+		}
 
-		caConfigMap, err := client.CoreV1().ConfigMaps(namespace).Get(ctx, "openshift-service-ca.crt", metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("getting service CA in namespace %s: %w", namespace, err)
-		}
-		if ca := caConfigMap.Data["service-ca.crt"]; ca != "" {
-			caBundles[ca] = struct{}{}
-		}
 		if customCA, _, _ := unstructured.NestedString(entry, "caCertificate"); customCA != "" {
-			caBundles[customCA] = struct{}{}
+			proxyService.CACertificate = customCA
+		} else {
+			caConfigMap, err := client.CoreV1().ConfigMaps(namespace).Get(ctx, "openshift-service-ca.crt", metav1.GetOptions{})
+			if err != nil {
+				return nil, fmt.Errorf("getting service CA in namespace %s: %w", namespace, err)
+			}
+			if ca := caConfigMap.Data["service-ca.crt"]; ca != "" {
+				caBundles[ca] = struct{}{}
+			}
 		}
+		proxyConfig.Services = append(proxyConfig.Services, proxyService)
 	}
 
 	encodedConfig, err := json.Marshal(proxyConfig)
@@ -419,11 +430,13 @@ func buildConsoleProxyOptions(ctx context.Context, client kubernetes.Interface, 
 		return nil, fmt.Errorf("encoding Bridge plugin proxy configuration: %w", err)
 	}
 	result.config = string(encodedConfig)
-	caFile, err := writeConsoleServiceCA(caBundles)
-	if err != nil {
-		return nil, err
+	if len(caBundles) > 0 {
+		caFile, err := writeCA(caBundles)
+		if err != nil {
+			return nil, err
+		}
+		result.caFile = caFile
 	}
-	result.caFile = caFile
 	return result, nil
 }
 
@@ -468,9 +481,17 @@ func ensureConsoleProxyLoadBalancer(ctx context.Context, client kubernetes.Inter
 			},
 		}
 		shadow, err = services.Create(ctx, shadow, metav1.CreateOptions{})
+	} else if err == nil {
+		if shadow.Labels["app.kubernetes.io/managed-by"] != "oinc" || shadow.Labels["oinc.io/console-plugin"] != pluginName {
+			return "", fmt.Errorf("development proxy LoadBalancer %s/%s already exists and is not managed by OINC for ConsolePlugin %s", namespace, shadowName, pluginName)
+		}
+		shadow.Spec.Type = corev1.ServiceTypeLoadBalancer
+		shadow.Spec.Selector = original.Spec.Selector
+		shadow.Spec.Ports = []corev1.ServicePort{*servicePort}
+		shadow, err = services.Update(ctx, shadow, metav1.UpdateOptions{})
 	}
 	if err != nil {
-		return "", fmt.Errorf("creating development proxy LoadBalancer %s/%s: %w", namespace, shadowName, err)
+		return "", fmt.Errorf("ensuring development proxy LoadBalancer %s/%s: %w", namespace, shadowName, err)
 	}
 	logger.Info("waiting for Console proxy LoadBalancer", "service", namespace+"/"+shadowName)
 
@@ -504,9 +525,12 @@ func consoleProxyServiceName(pluginName, alias string) string {
 		return '-'
 	}, name)
 	name = strings.Trim(name, "-")
-	if len(name) > 63 {
+	if name != rawName || len(name) > 63 {
 		digest := sha256.Sum256([]byte(rawName))
-		name = strings.TrimRight(name[:54], "-") + fmt.Sprintf("-%x", digest[:4])
+		if len(name) > 54 {
+			name = name[:54]
+		}
+		name = strings.TrimRight(name, "-") + fmt.Sprintf("-%x", digest[:4])
 	}
 	return name
 }
