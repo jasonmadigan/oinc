@@ -124,3 +124,20 @@ func TestWaitForMCPListenerReady(t *testing.T) {
 		}
 	})
 }
+
+func TestMCPGatewayHelmArgsUsePrerequisiteGatewayPort(t *testing.T) {
+	args := (&mcpGateway{valuesFile: "/tmp/custom-values.yaml"}).helmArgs()
+	joined := strings.Join(args, " ")
+
+	valuesAt := strings.Index(joined, "--values /tmp/custom-values.yaml")
+	portAt := strings.Index(joined, "--set gateway.port=80")
+	if valuesAt == -1 {
+		t.Fatalf("helm args %q do not include the values overlay", joined)
+	}
+	if portAt == -1 {
+		t.Fatalf("helm args %q do not set the chart port to the prerequisite Gateway port", joined)
+	}
+	if portAt < valuesAt {
+		t.Fatalf("gateway port override must follow the values overlay so the generated privateHost matches the Gateway: %q", joined)
+	}
+}
