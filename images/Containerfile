@@ -3,6 +3,7 @@ FROM quay.io/centos/centos:stream9
 
 ARG OCP_VERSION
 ARG OKD_VERSION
+ARG DEPS_VERSION=""
 ARG RELEASE_TAG=""
 ARG TARBALL_SHA256=""
 ARG COPR_PIN=""
@@ -11,7 +12,12 @@ ARG WITH_OLM=1
 # rpm source is exactly one of:
 #   RELEASE_TAG: microshift-io github release rpm tarball (released versions, sha256-pinned)
 #   COPR_PIN: exact version-release from the nightly copr (pre-release only, copr prunes old builds)
-# guard asserts installed release-info carries OKD_VERSION so source drift fails the build
+# the copr project runs in devel mode: new builds only land in the devel/ repodata
+# until the owner regenerates the main repo, so both are enabled and either may
+# carry the pin. guard asserts installed release-info carries OKD_VERSION so
+# source drift fails the build.
+# the deps mirror directory tracks the cri-o the rpm was built against, which is
+# not always the payload version, so DEPS_VERSION overrides it when they differ
 RUN ARCH=$(uname -m) && \
     if [ -z "${OCP_VERSION}" ]; then \
         echo "OCP_VERSION is required" >&2; exit 1; \
@@ -27,7 +33,7 @@ RUN ARCH=$(uname -m) && \
         echo "TARBALL_SHA256 is required with RELEASE_TAG" >&2; exit 1; \
     fi && \
     printf '[openshift-deps]\nname=OpenShift Dependencies\nbaseurl=https://mirror.openshift.com/pub/openshift-v4/%s/dependencies/rpms/%s-el9-beta/\nenabled=1\ngpgcheck=0\n' \
-      "$ARCH" "${OCP_VERSION}" \
+      "$ARCH" "${DEPS_VERSION:-${OCP_VERSION}}" \
       > /etc/yum.repos.d/openshift-deps.repo && \
     if [ -n "${RELEASE_TAG}" ]; then \
         curl -fsSL --retry 5 -o /tmp/rpms.tgz \
@@ -39,8 +45,8 @@ RUN ARCH=$(uname -m) && \
           > /etc/yum.repos.d/microshift.repo && \
         PIN="" ; \
     else \
-        printf '[microshift-nightly]\nname=MicroShift Nightly\nbaseurl=https://download.copr.fedorainfracloud.org/results/@microshift-io/microshift-nightly/epel-9-%s/\nenabled=1\ngpgcheck=0\n' \
-          "$ARCH" \
+        printf '[microshift-nightly]\nname=MicroShift Nightly\nbaseurl=https://download.copr.fedorainfracloud.org/results/@microshift-io/microshift-nightly/epel-9-%s/\nenabled=1\ngpgcheck=0\nskip_if_unavailable=1\n\n[microshift-nightly-devel]\nname=MicroShift Nightly (devel)\nbaseurl=https://download.copr.fedorainfracloud.org/results/@microshift-io/microshift-nightly/epel-9-%s/devel/\nenabled=1\ngpgcheck=0\nskip_if_unavailable=1\n' \
+          "$ARCH" "$ARCH" \
           > /etc/yum.repos.d/microshift.repo && \
         PIN="-${COPR_PIN}" ; \
     fi && \

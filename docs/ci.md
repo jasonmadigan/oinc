@@ -8,7 +8,7 @@ Builds MicroShift container images. **Manual dispatch only** (`workflow_dispatch
 
 - Triggered manually from GitHub Actions UI
 - Optional `version` input to build a single OCP version (blank = all)
-- Matrix: version x arch (currently 4.20 + 4.21 + 4.22, each with amd64 + arm64 = 6 jobs)
+- Matrix: version x arch (currently 4.20 + 4.21 + 4.22 + 5.0, each with amd64 + arm64 = 8 jobs)
 - ARM builds run on `ubuntu-24.04-arm` runners (native, no emulation)
 - Uses podman for builds (not docker)
 - Pushes to `ghcr.io/jasonmadigan/oinc`
