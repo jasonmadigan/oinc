@@ -132,6 +132,9 @@ func detectAddons() []AddonInfo {
 			continue
 		}
 		ready := deploymentReady(ctx, dyn, check.namespace, check.deployment)
+		if check.name == "mcp-gateway" && !ready {
+			ready = managedMCPGatewayReady(ctx, dyn)
+		}
 		addons = append(addons, AddonInfo{Name: check.name, Ready: ready})
 	}
 
@@ -143,6 +146,17 @@ func detectAddons() []AddonInfo {
 
 	sort.Slice(addons, func(i, j int) bool { return addons[i].Name < addons[j].Name })
 	return addons
+}
+
+func managedMCPGatewayReady(ctx context.Context, dyn dynamic.Interface) bool {
+	if !deploymentReady(ctx, dyn, "kuadrant-system", "mcp-gateway-controller") {
+		return false
+	}
+	// A bundled controller alone does not mean the addon instance is installed.
+	// Otherwise the interactive installer skips the Gateway/extension setup.
+	extensionGVR := schema.GroupVersionResource{Group: "mcp.kuadrant.io", Version: "v1", Resource: "mcpgatewayextensions"}
+	_, err := dyn.Resource(extensionGVR).Namespace("mcp-gateway-system").Get(ctx, "mcp-gateway-extension", metav1.GetOptions{})
+	return err == nil
 }
 
 func deploymentReady(ctx context.Context, dyn dynamic.Interface, ns, name string) bool {

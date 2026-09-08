@@ -134,6 +134,8 @@ The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons
 
 Dependencies are resolved automatically. Installing `kuadrant` will pull in `gateway-api`, `cert-manager`, `metallb`, and `istio`. Installing `mcp-gateway` will pull in `kuadrant` and all its dependencies.
 
+With recent `kuadrant@latest` builds, `mcp-gateway` reuses Kuadrant's bundled MCP controller and CRDs and configures the gateway instance. Older Kuadrant releases get the standalone Helm install. See [MCP Gateway addon details](docs/addons.md#mcp-gateway) for values overlays and recovery from a duplicate CRD install.
+
 ```bash
 # at create time
 oinc create --addons kuadrant

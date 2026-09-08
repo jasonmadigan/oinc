@@ -47,7 +47,29 @@ Uses `helm upgrade --install` for idempotency. Helm must be available in `$PATH`
 - **Istio**: installs the Sail operator from a GitHub release tarball, then creates an `Istio` CR in the `Ready` phase
 - **Kuadrant**: adds the `kuadrant.io` helm repo, installs the operator, then creates a `Kuadrant` CR and waits for it to become ready
 - **RHDH**: adds the `rhdh` helm repo and installs the `rhdh/backstage` chart into the `rhdh` namespace (see below)
-- **MCP Gateway**: installs from the OCI chart at `oci://ghcr.io/kuadrant/charts/mcp-gateway` into the `mcp-gateway-system` namespace; creates a Gateway and ReferenceGrant in `gateway-system` as prerequisites
+- **MCP Gateway**: uses the OCI chart at `oci://ghcr.io/kuadrant/charts/mcp-gateway` for the instance in `mcp-gateway-system`; reuses Kuadrant's bundled controller and CRDs when available, otherwise installs the full chart. Creates a Gateway and ReferenceGrant in `gateway-system` as prerequisites.
+
+## MCP Gateway
+
+Recent Kuadrant operator builds (including `kuadrant@latest` after [Kuadrant/kuadrant-operator#2202](https://github.com/Kuadrant/kuadrant-operator/pull/2202)) deploy the MCP Gateway controller in `kuadrant-system` and manage its CRDs. They do not create a Gateway or `MCPGatewayExtension` instance. Request both addons to configure one:
+
+```bash
+oinc create --addons kuadrant@latest,mcp-gateway
+```
+
+The MCP addon checks the `MCPGatewayExtension` CRD's `app.kubernetes.io/managed-by` label. When Kuadrant owns it, oinc renders the chart with `controller.enabled=false` and applies only instance resources using server-side apply, without forcing ownership conflicts. It uses the API version served by the installed CRD: published charts can still render `v1alpha1` while the bundled controller serves `v1`. No standalone MCP Helm release, controller, RBAC, or CRDs are installed in this mode.
+
+The `mcp-gateway@VERSION` option selects the chart used to render the instance, and `--mcp-gateway-values FILE` supplies its values overlay. Kuadrant controls the controller and broker images; chart image and controller settings do not override them. oinc forces `controller.enabled=false` after the overlay and keeps the instance's gateway port at 80. Values rendered into instance resources, such as the public host, backend ping interval and extension fields, still apply. Values used only by the controller deployment are ignored. Readiness checks the bundled controller and the gateway's accepted `mcp` listener; status requires an extension instance as well as the controller.
+
+Older Kuadrant releases without bundled MCP support retain the standalone Helm installation, using chart 0.8.0 by default. A failed ownership lookup stops installation rather than attempting a second controller install.
+
+For an existing cluster whose MCP install failed with `conflict with "kuadrant-operator": .spec.versions`, rebuild or update oinc and run:
+
+```bash
+oinc addon install kuadrant@latest,mcp-gateway
+```
+
+The interactive installer skips ready dependencies and configures the missing MCP instance. This does not migrate or uninstall an existing standalone MCP Helm release.
 
 ## RHDH
 
@@ -99,9 +121,9 @@ Mechanics worth knowing:
 - **Ordering**: `--gateway-api-gateway` gives the gateway-api addon dependencies on istio and metallb, so the Gateway is only created and waited on once istiod can deploy it and metallb can address it. Pair it with `--metallb-address-pool` (or a pre-existing pool), otherwise the Programmed wait times out.
 - **Idempotence**: all instances are create-if-absent; re-running `oinc addon install` with the same flags is a no-op for existing instances.
 
-## Why not OLM?
+## OLM compatibility
 
-MicroShift ships OLM, but its bundled version uses an older catalogue format that's incompatible with the FBC (File-Based Catalogue) images from OperatorHub (`quay.io/operatorhubio/catalog:latest`). The Sail operator's own catalogue also requires authentication. Rather than fight these issues, addons use direct manifests or helm.
+MicroShift ships OLM, but its bundled version uses an older catalogue format that's incompatible with the FBC (File-Based Catalogue) images from OperatorHub (`quay.io/operatorhubio/catalog:latest`). The Sail operator's own catalogue also requires authentication. Most addons therefore use direct manifests or Helm. `kuadrant@latest` uses OLM with Kuadrant's compatible `quay.io/kuadrant/kuadrant-operator-catalog:latest` catalogue; pinned Kuadrant releases use Helm.
 
 ## Version pinning
 
