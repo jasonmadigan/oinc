@@ -14,6 +14,8 @@ The last entry in the catalogue is the default. `oinc create` uses it unless `--
 
 Released versions install MicroShift RPM tarballs from [microshift-io/microshift GitHub releases](https://github.com/microshift-io/microshift/releases). Pre-release versions with no GitHub release yet install from the `@microshift-io/microshift-nightly` COPR repo, pinned to an exact version-release. The COPR only builds upstream main and prunes old builds, so a pinned COPR version can become unbuildable over time; switch it to the tarball path once a GitHub release appears.
 
+The COPR project runs in devel mode, so recent builds appear only in the `devel/` repodata until the owner regenerates the main repo. Both repos are enabled at build time and either can satisfy the pin.
+
 Every build asserts the installed `microshift-release-info` carries the intended OKD tag and fails otherwise, so an RPM source drifting to a different version cannot publish silently.
 
 The openshift-deps mirror (`mirror.openshift.com`) is still used for dependency packages during the image build.
@@ -28,6 +30,7 @@ Or manually:
 
 2. Check that upstream resources exist:
    - `openshift/api` branch `release-{version}`
+   - openshift-deps mirror directory `{version}-el9-beta`
    - Console image `quay.io/openshift/origin-console:{version}`
 
 3. Add catalogue entry in `pkg/version/version.go`

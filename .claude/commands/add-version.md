@@ -50,8 +50,15 @@ For each new version:
   `gh api repos/microshift-io/microshift/releases/tags/{tag} --jq '.assets[] | select(.name|startswith("microshift-rpms-")) | "\(.name) \(.digest)"'`
   (release assets are not guaranteed immutable, so the hash pins the content).
 - Otherwise pin the COPR build: take the full `version-release` from the step 1 scan
-  (e.g. `5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9`) and use it as `copr_pin`.
-  Confirm it exists for both `epel-9-x86_64` and `epel-9-aarch64`.
+  (e.g. `5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9`) and use it as `copr_pin`.
+  Confirm it exists for both `epel-9-x86_64` and `epel-9-aarch64`. The COPR build list
+  reports the overall state across all chroots, so a build marked `failed` can still have
+  succeeded on both epel-9 chroots; check per-chroot state via
+  `curl -sL https://copr.fedorainfracloud.org/api_3/build-chroot/list/{build_id}`.
+  The project runs in devel mode: a build may only be indexed in
+  `epel-9-{arch}/devel/repodata` and not yet in `epel-9-{arch}/repodata`. Both are
+  enabled during the image build, so a pin found in either is usable, but it must be
+  present for both arches.
 
 Also check whether any existing `copr_pin` version now has a GitHub release and offer to switch it to `release_tag`.
 
@@ -60,6 +67,7 @@ Also check whether any existing `copr_pin` version now has a GitHub release and 
 For each new version, verify:
 - openshift/api branch: `gh api repos/openshift/api/branches/release-{version} --jq '.name'`
 - Console image: `docker manifest inspect quay.io/openshift/origin-console:{version}`
+- openshift-deps mirror: `https://mirror.openshift.com/pub/openshift-v4/{arch}/dependencies/rpms/{version}-el9-beta/` for both x86_64 and aarch64
 
 ## 5. Present findings
 
