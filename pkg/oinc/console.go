@@ -284,7 +284,9 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 	opts := runtime.ContainerOpts{
 		Name:  consoleContainer,
 		Image: ver.ConsoleImageRef(),
-		Env:   env,
+		// origin-console publishes amd64 images, even for native ARM clusters.
+		Platform: "linux/amd64",
+		Env:      env,
 	}
 	if proxyOptions != nil {
 		opts.ExtraHosts = proxyOptions.extraHosts

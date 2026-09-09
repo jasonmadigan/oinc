@@ -43,7 +43,7 @@ Container host address varies by runtime:
 - openshift/api branch for CRD fetch (e.g. `release-4.21`)
 - Supported architectures
 
-The latest entry is the default. `--version` selects a specific entry.
+The newest stable entry is the default; `ec` and `rc` tags are opt-in. `--version` accepts a catalogue minor, a full OKD tag for a supported minor, or a remote channel. `@latest` selects stable published images only; `@next` includes prereleases. Both can be scoped to a major or minor, such as `4@latest` or `5.0@next`. Remote discovery is in `pkg/version/remote.go`.
 
 ## Kubeconfig
 

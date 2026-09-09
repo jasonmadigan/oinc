@@ -7,7 +7,8 @@
 Builds MicroShift container images. **Manual dispatch only** (`workflow_dispatch`).
 
 - Triggered manually from GitHub Actions UI
-- Optional `version` input to build a single OCP version (blank = all)
+- Optional `version` input to build a single OCP minor (default: all)
+- Optional `okd_version`, `copr_pin` and `deps_version` inputs, supplied together with `version`, build a newer pinned COPR release within that minor without changing the matrix. See [image builds](images.md#building-a-newer-okd-release).
 - Matrix: version x arch (currently 4.20 + 4.21 + 4.22 + 5.0, each with amd64 + arm64 = 8 jobs)
 - ARM builds run on `ubuntu-24.04-arm` runners (native, no emulation)
 - Uses podman for builds (not docker)

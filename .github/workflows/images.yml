@@ -4,9 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "OCP version to build (blank = all)"
+        description: "OCP minor to build (all = every catalogue pin)"
+        type: choice
+        options: ["all", "4.20", "4.21", "4.22", "5.0"]
+        default: "all"
+      okd_version:
+        description: "Optional full OKD tag to build instead of the catalogue pin (requires version, copr_pin and deps_version)"
         type: string
-        default: ""
+      copr_pin:
+        description: "Exact COPR RPM version-release for the optional OKD build"
+        type: string
+      deps_version:
+        description: "OpenShift dependency minor for the optional COPR build (e.g. 5.1)"
+        type: string
 
 concurrency:
   group: images-${{ github.ref }}
@@ -70,7 +80,7 @@ jobs:
 
     steps:
       - name: Check version filter
-        if: github.event.inputs.version != '' && github.event.inputs.version != matrix.version
+        if: inputs.version != '' && inputs.version != 'all' && inputs.version != matrix.version
         run: echo "SKIP=true" >> "$GITHUB_ENV"
 
       - name: Checkout
@@ -85,17 +95,49 @@ jobs:
 
       - name: Build image
         if: env.SKIP != 'true'
+        env:
+          SELECTED_VERSION: ${{ inputs.version }}
+          OVERRIDE_OKD: ${{ inputs.okd_version }}
+          OVERRIDE_COPR: ${{ inputs.copr_pin }}
+          OVERRIDE_DEPS: ${{ inputs.deps_version }}
+          OCP_VERSION: ${{ matrix.version }}
+          OKD_VERSION: ${{ matrix.okd_version }}
+          DEPS_VERSION: ${{ matrix.deps_version }}
+          RELEASE_TAG: ${{ matrix.release_tag }}
+          TARBALL_SHA256: ${{ matrix.tarball_sha256 }}
+          COPR_PIN: ${{ matrix.copr_pin }}
+          BUILD_ARCH: ${{ matrix.arch }}
         run: |
+          if [[ -n "$OVERRIDE_OKD$OVERRIDE_COPR$OVERRIDE_DEPS" ]]; then
+            if [[ -z "$SELECTED_VERSION" || "$SELECTED_VERSION" == "all" || -z "$OVERRIDE_OKD" || -z "$OVERRIDE_COPR" || -z "$OVERRIDE_DEPS" ]]; then
+              echo "Custom builds require version, okd_version, copr_pin and deps_version" >&2
+              exit 1
+            fi
+            if [[ ! "$OVERRIDE_OKD" =~ ^[0-9]+\.[0-9]+\.[0-9]+-okd-scos\.((ec|rc)\.)?[0-9]+$ ]] ||
+               [[ "$OVERRIDE_OKD" != "$OCP_VERSION."* ]] ||
+               [[ ! "$OVERRIDE_DEPS" =~ ^[0-9]+\.[0-9]+$ ]] ||
+               [[ ! "$OVERRIDE_COPR" =~ ^[a-zA-Z0-9._+-]+$ ]]; then
+              echo "Invalid custom build: check the OKD tag, matching minor, COPR pin and dependency minor" >&2
+              exit 1
+            fi
+            OKD_VERSION="$OVERRIDE_OKD"
+            COPR_PIN="$OVERRIDE_COPR"
+            DEPS_VERSION="$OVERRIDE_DEPS"
+            RELEASE_TAG=""
+            TARBALL_SHA256=""
+          fi
+          IMAGE_REF="$IMAGE_NAME:$OKD_VERSION-$BUILD_ARCH"
           sudo podman build \
-            --build-arg OCP_VERSION="${{ matrix.version }}" \
-            --build-arg OKD_VERSION="${{ matrix.okd_version }}" \
-            --build-arg DEPS_VERSION="${{ matrix.deps_version }}" \
-            --build-arg RELEASE_TAG="${{ matrix.release_tag }}" \
-            --build-arg TARBALL_SHA256="${{ matrix.tarball_sha256 }}" \
-            --build-arg COPR_PIN="${{ matrix.copr_pin }}" \
+            --build-arg OCP_VERSION="$OCP_VERSION" \
+            --build-arg OKD_VERSION="$OKD_VERSION" \
+            --build-arg DEPS_VERSION="$DEPS_VERSION" \
+            --build-arg RELEASE_TAG="$RELEASE_TAG" \
+            --build-arg TARBALL_SHA256="$TARBALL_SHA256" \
+            --build-arg COPR_PIN="$COPR_PIN" \
             --build-arg WITH_OLM=1 \
-            -t "${{ env.IMAGE_NAME }}:${{ matrix.okd_version }}-${{ matrix.arch }}" \
+            -t "$IMAGE_REF" \
             -f images/Containerfile images/
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
         timeout-minutes: 15
 
       - name: Login to GHCR
@@ -107,7 +149,10 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           for attempt in 1 2 3; do
-            sudo podman push "${{ env.IMAGE_NAME }}:${{ matrix.okd_version }}-${{ matrix.arch }}" && break
+            if sudo podman push "$IMAGE_REF"; then
+              exit 0
+            fi
             echo "push attempt ${attempt} failed, retrying in 10s..."
             sleep 10
           done
+          exit 1

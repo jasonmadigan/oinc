@@ -1,0 +1,8 @@
+# Local workaround for origin-console:5.0's x86-64-v3 glibc requirement.
+# The binary and assets are unchanged; build with --platform=linux/amd64.
+# See docs/ocp-release-candidates.md for the tested configuration and limits.
+FROM quay.io/openshift/origin-console@sha256:c01df63365d3f615a21a3bd79ee8df1fb5ca63b4dd9f75ef5c6b59d99f28fbde AS console
+FROM quay.io/centos/centos:stream9
+COPY --from=console /opt/bridge/ /opt/bridge/
+USER 1001
+CMD ["/opt/bridge/bin/bridge", "--public-dir=/opt/bridge/static"]
