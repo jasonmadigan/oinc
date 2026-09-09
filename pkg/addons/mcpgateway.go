@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -94,8 +95,8 @@ func (m *mcpGateway) chartOptions() []string {
 	return args
 }
 
-func (m *mcpGateway) templateArgs() []string {
-	args := []string{"template", "mcp-gateway", mcpGatewayChartOCI, "-n", mcpGatewayNamespace}
+func (m *mcpGateway) templateArgs(chart string) []string {
+	args := []string{"template", "mcp-gateway", chart, "-n", mcpGatewayNamespace}
 	args = append(args, m.chartOptions()...)
 	// Apply after user values so an overlay cannot deploy a second controller.
 	return append(args, "--set", "controller.enabled=false", "--skip-tests")
@@ -172,7 +173,28 @@ func kuadrantMCPVersion(ctx context.Context, cfg *Config) (string, error) {
 
 func (m *mcpGateway) installManagedInstance(ctx context.Context, cfg *Config, apiVersion string) error {
 	cfg.Logger.Info("configuring mcp-gateway with Kuadrant-managed controller", "chartVersion", m.resolveVersion(), "apiVersion", apiVersion)
-	cmd := exec.CommandContext(ctx, "helm", m.templateArgs()...)
+	chartDir, err := os.MkdirTemp("", "oinc-mcp-chart-")
+	if err != nil {
+		return fmt.Errorf("creating mcp-gateway chart directory: %w", err)
+	}
+	defer os.RemoveAll(chartDir)
+
+	// Some Helm versions write OCI pull messages to stdout during template.
+	// Pull separately so the decoder receives only the local chart's manifest.
+	pullArgs := []string{"pull", mcpGatewayChartOCI, "--destination", chartDir}
+	pullArgs = append(pullArgs, m.chartVersionArgs()...)
+	if out, err := exec.CommandContext(ctx, "helm", pullArgs...).CombinedOutput(); err != nil {
+		return fmt.Errorf("pulling mcp-gateway chart: %s: %w", out, err)
+	}
+	charts, err := os.ReadDir(chartDir)
+	if err != nil {
+		return fmt.Errorf("reading mcp-gateway chart directory: %w", err)
+	}
+	if len(charts) != 1 || charts[0].IsDir() || filepath.Ext(charts[0].Name()) != ".tgz" {
+		return fmt.Errorf("pulling mcp-gateway chart: expected one chart archive in %s", chartDir)
+	}
+	chart := filepath.Join(chartDir, charts[0].Name())
+	cmd := exec.CommandContext(ctx, "helm", m.templateArgs(chart)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	manifest, err := cmd.Output()
