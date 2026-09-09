@@ -1,104 +1,86 @@
 ---
-description: Scan for new MicroShift versions and add them to the catalogue
-allowed-tools: Bash, Read, Edit, Glob, Grep, WebFetch, AskUserQuestion
+description: Update OKD release pins, add supported minors, or investigate Red Hat MicroShift RCs with artifact and runtime verification
+allowed-tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch, AskUserQuestion
 ---
 
-Scan for new OCP/MicroShift versions and offer to add them.
+Update the requested release or scan for candidates. For addon updates, use `/update-addons`. Read `docs/versions.md`, `docs/images.md`, the version resolver and image workflow before changing pins. Read `docs/ocp-release-candidates.md` when handling 5.0, Red Hat RCs, ARM Console failures or experimental images; it records the tested configurations and outstanding integration failures.
 
-RPMs come from one of two sources, set per version in the images.yml matrix:
-- `release_tag`: a microshift-io/microshift GitHub release RPM tarball (preferred, immutable)
-- `copr_pin`: an exact version-release from the `@microshift-io/microshift-nightly` COPR
+## 1. Establish the current configuration
 
-The COPR only builds upstream main and prunes old builds, so it is only usable
-for the current pre-release version, pinned. Move a version to `release_tag`
-as soon as a GitHub release for its OKD tag exists.
+Read `pkg/version/version.go`, `pkg/version/remote.go`, `pkg/oinc/console.go`, `images/Containerfile` and `.github/workflows/images.yml`. Inspect the working tree and running containers. Identify the requested distribution, exact release, architecture and whether this is a new minor or a newer build within an existing minor.
 
-## 1. Scan COPR for available versions
+Keep these identities separate:
 
-Query recent builds to find OKD version strings:
+- The normal catalogue selects **OKD MicroShift**. An OCP-style minor identifies compatibility settings; it does not select a Red Hat payload.
+- Red Hat MicroShift RCs use separate RPMs, release-info and authenticated component images. MicroShift remains a subset of OCP, including when using Red Hat packages.
+- A community RPM can combine mainline MicroShift with an OKD component release. Record the RPM version, `microshift version`, release-info base, component digests and node Kubernetes version; an OKD tag alone does not establish equivalence to an OCP RC.
+- Console branding is configurable. Verify the running image digest against the intended artifact. Set `BRIDGE_BRANDING=ocp` for Red Hat branding when launching standalone; the default branding can still say OKD.
+
+Keep oinc container-based. Preserve OKD's path without a Red Hat pull secret. Mount credentials only at runtime for the Red Hat path, keep credential files private, and redact tokens from command output. A successful authenticated pull does not prove anonymous access works; test anonymous access separately when making that claim.
+
+## 2. Discover releases and usable artifacts
+
+Check primary upstream sources and published oinc images:
 
 ```bash
-curl -sL "https://copr.fedorainfracloud.org/api_3/build/list?ownername=@microshift-io&projectname=microshift-nightly&packagename=microshift&limit=50" | \
-  python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-seen = set()
-for item in data.get('items', []):
-    ver = item.get('source_package', {}).get('version', '')
-    # extract the okd tag portion (after the git hash)
-    parts = ver.split('_g')
-    if len(parts) == 2:
-        okd = parts[1].split('_', 1)[1].replace('_', '-').rstrip('-1')
-        minor = okd.split('.')[0] + '.' + okd.split('.')[1]
-        if minor not in seen:
-            seen.add(minor)
-            print(f'{minor}: {okd}')
-"
+make build
+gh release list -R okd-project/okd --limit 20
+gh release list -R microshift-io/microshift --limit 20
+./bin/oinc version list --remote
 ```
 
-## 2. Compare against current catalogue
+For Red Hat candidates, inspect `openshift/microshift` releases and the exact OCP payload with `oc adm release info`. Use the configured pull secret without printing it. Resolve Console images from the matching payload and inspect their architectures.
 
-Read `pkg/version/version.go` to get currently supported versions. Identify new minor versions not already in the catalogue.
+For each OKD candidate, choose exactly one RPM source:
 
-## 3. Pick the RPM source
+- **Release tarball:** a matching `microshift-io/microshift` release, with both `microshift-rpms-x86_64.tgz` and `microshift-rpms-aarch64.tgz`. Verify and record each asset's SHA-256. Release assets are mutable; the digest pins the content.
+- **COPR:** an exact version-release from `@microshift-io/microshift-nightly`. Inspect package metadata and per-chroot build status for both epel-9 architectures. Check main and `devel/` repodata; recent packages may appear only in `devel/`. Preserve the complete RPM pin and parse the OKD tag without trimming version digits. Mainline builds can require a newer dependency minor than their OKD tag. COPR prunes builds, so prefer verified release tarballs when available.
 
-For each new version:
-- Look for a GitHub release whose tag ends in the OKD tag (underscored):
-  `gh api repos/microshift-io/microshift/releases --jq '.[].tag_name'`
-  If found, use it as `release_tag`, confirm `microshift-rpms-x86_64.tgz` and `microshift-rpms-aarch64.tgz` assets exist,
-  and record each asset's sha256 as its `tarball_sha256`:
-  `gh api repos/microshift-io/microshift/releases/tags/{tag} --jq '.assets[] | select(.name|startswith("microshift-rpms-")) | "\(.name) \(.digest)"'`
-  (release assets are not guaranteed immutable, so the hash pins the content).
-- Otherwise pin the COPR build: take the full `version-release` from the step 1 scan
-  (e.g. `5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9`) and use it as `copr_pin`.
-  Confirm it exists for both `epel-9-x86_64` and `epel-9-aarch64`. The COPR build list
-  reports the overall state across all chroots, so a build marked `failed` can still have
-  succeeded on both epel-9 chroots; check per-chroot state via
-  `curl -sL https://copr.fedorainfracloud.org/api_3/build-chroot/list/{build_id}`.
-  The project runs in devel mode: a build may only be indexed in
-  `epel-9-{arch}/devel/repodata` and not yet in `epel-9-{arch}/repodata`. Both are
-  enabled during the image build, so a pin found in either is usable, but it must be
-  present for both arches.
+Derive `deps_version` from actual RPM requirements, especially CRI-O, and verify the dependency mirror for each architecture. Check the `openshift/api` branch and Console image as well. A release announcement, successful manifest lookup or existing local image is not proof that the complete oinc image can be built, published and booted.
 
-Also check whether any existing `copr_pin` version now has a GitHub release and offer to switch it to `release_tag`.
+Present a table with distribution, exact tag, RPM source/pin, dependency minor, architectures, Console reference and publication/test status. For a named update, proceed within the user's existing authorization. For discovery without a selected target, present the evidence before asking which candidates to update.
 
-## 4. Check upstream resources
+## 3. Apply the appropriate update
 
-For each new version, verify:
-- openshift/api branch: `gh api repos/openshift/api/branches/release-{version} --jq '.name'`
-- Console image: `docker manifest inspect quay.io/openshift/origin-console:{version}`
-- openshift-deps mirror: `https://mirror.openshift.com/pub/openshift-v4/{arch}/dependencies/rpms/{version}-el9-beta/` for both x86_64 and aarch64
+### New OKD build within a supported minor
 
-## 5. Present findings
+Use the existing compatibility settings. The image workflow accepts `version`, `okd_version`, `copr_pin` and `deps_version` together for a custom COPR build; verify their current validation rules in the workflow. A newly published exact tag is discoverable without a CLI catalogue edit. Update a catalogue pin only when changing the offline minor default is part of the request. Tarball builds use the matrix source and architecture-specific checksums.
 
-Show a summary table with resource status. Use `AskUserQuestion` to let the user pick version(s) to add.
+### New OKD minor
 
-## 6. Apply changes (after user confirms)
+Add the catalogue entry, workflow input choice and matrix entries for every verified architecture. Update the supported-version table and relevant image/version docs. Enable only architectures whose required artifacts and runtime configuration have been verified.
 
-**a. Version catalogue** -- edit `pkg/version/version.go`, add entry at end of `catalogue` slice:
-```go
-{
-    Version:       "{minor}",
-    MicroShiftTag: "{okd-tag}",
-    ConsoleTag:    "{minor}",
-    APIBranch:     "release-{minor}",
-    Arches:        []string{"amd64", "arm64"},
-},
-```
+### Red Hat RC
 
-**b. CI workflow** -- edit `.github/workflows/images.yml`, add matrix entries for both architectures with `okd_version` and either `release_tag` plus `tarball_sha256` or `copr_pin`.
+Keep distribution identity, image references and credentials separate from OKD. The experimental recipes are evidence, not implemented CLI distribution support. Read the current source before claiming that a distribution flag or published RC image exists. Record any networking or storage substitutions explicitly.
 
-**c. README + docs/versions.md** -- update supported versions tables.
+### Stable and prerelease channels
 
-## 7. Verify
+Keep the offline default stable. `@latest` excludes EC/RC tags, `4@latest` stays within stable 4.x, and `@next` opts into prereleases. An explicit prerelease pin does not make it a stable default. Preserve numeric ordering, architecture filtering and resolving a switch before deleting the existing cluster.
 
-- `go build ./...`
-- `go vet ./...`
-- `make build && ./bin/oinc version list`
+## 4. Verify the normal runtime path
 
-## 8. Summary
+Build the CLI and candidate image. Use authorized local test clusters and separate names/ports when preserving an existing comparison cluster. Run the normal create flow with the candidate selected and record whether the image was locally built or actually pulled from the registry: oinc skips pulling cached images.
 
-Tell the user what was added. Remind them to:
-- Run the image build workflow: `gh workflow run images.yml`
-- Review and commit the changes
-- Do NOT commit automatically
+For each configuration being claimed as supported, verify:
+
+1. Installed RPM, release-info, running component digests and node version match the intended build. Confirm the Console's actual architecture and digest.
+2. The node and all expected base pods are ready, including DNS, ingress, service CA, networking and OLM when included. Check that expected workloads exist; an empty namespace is not readiness.
+3. `oinc load-image` loads a local image, the workload starts, internal service DNS/HTTP works, and an OpenShift Route responds through the mapped host port.
+4. The actual Console process stays running. Check its logs: an amd64 pull can succeed while execution fails on ARM emulation because of a glibc/CPU requirement.
+5. The Console serves its page and initial JS/CSS assets, has the expected branding, and proxies node/workload reads. Create, read and delete a temporary ConfigMap through the Console proxy using the normal session/CSRF protocol, then verify deletion.
+6. If UI behaviour is claimed, exercise it in a browser. Label HTTP/API checks accurately when no browser walkthrough was performed.
+
+Test each release separately. Success on rc1 does not establish rc0 behaviour. Prefer the original compatible image, including a native architecture build when available, over a local base-image substitution.
+
+**A workaround is an unresolved integration issue.** A manually retagged image, replaced Console container, altered base image or out-of-band config can establish feasibility, but cannot turn a failed normal create flow into a passing release test. Implement the durable fix in the build/runtime/publishing path and rerun the normal flow before claiming support. Keep temporary experiments and their limitations explicit while that work remains open.
+
+For code changes run `go test ./...`, `go vet ./...` and `make build`; validate image-workflow changes with `actionlint`. Check selectors against the intended published images, including stable-only rejection and missing architectures. A local-only build does not satisfy remote channel verification.
+
+## 5. Publish and report within the authorized scope
+
+Verify docs against the final code and tests. When publishing is authorized, run the workflow from the branch containing the intended changes, inspect every relevant architecture's result, and verify the resulting registry tags/digests. Failed or skipped publication is not a successful release update.
+
+Report exact versions and digests, tested architectures, secret requirements, passed/failed checks, remaining integration work and how to reach any clusters left running. Distinguish built locally, published, normal-flow tested and manually tested. Keep dated findings in `docs/ocp-release-candidates.md` instead of copying volatile versions into this command.
+
+Follow existing user authorization for commits, pushes and draft PRs; every commit must use `git commit --signoff`. If publication or other external action is not authorized, finish the reviewable changes and report the precise remaining action.

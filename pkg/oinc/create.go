@@ -78,7 +78,7 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 
 	steps = append(steps,
 		&tui.Step{Name: "resolving version", Run: func() error {
-			v, err := version.Resolve(opts.Version)
+			v, err := version.ResolveContext(ctx, opts.Version)
 			if err != nil {
 				return err
 			}
@@ -180,7 +180,7 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 		}
 	}
 
-	ver, err := version.Resolve(opts.Version)
+	ver, err := version.ResolveContext(ctx, opts.Version)
 	if err != nil {
 		return err
 	}

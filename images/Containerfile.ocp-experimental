@@ -1,0 +1,51 @@
+# Experimental Red Hat MicroShift RCs with oinc's kindnet networking.
+# This is not a full OCP installation. See docs/ocp-release-candidates.md.
+ARG OKD_NETWORKING_IMAGE
+FROM ${OKD_NETWORKING_IMAGE} AS networking
+
+FROM quay.io/centos/centos:stream9
+ARG RC=1
+
+RUN case "$RC" in 0|1) ;; *) echo 'RC must be 0 or 1' >&2; exit 1 ;; esac && \
+    dnf install -y centos-release-nfv-openvswitch && \
+    ARCH=$(uname -m) && \
+    printf '[microshift-rc]\nname=MicroShift RC\nbaseurl=https://mirror.openshift.com/pub/openshift-v5/%s/microshift/ocp/5.0.0-rc.%s/el9/os/\nenabled=1\ngpgcheck=0\n' \
+      "$ARCH" "$RC" > /etc/yum.repos.d/microshift-rc.repo && \
+    printf '[openshift-deps]\nname=OpenShift Dependencies\nbaseurl=https://mirror.openshift.com/pub/openshift-v4/%s/dependencies/rpms/5.0-el9-beta/\nenabled=1\ngpgcheck=0\n' \
+      "$ARCH" > /etc/yum.repos.d/openshift-deps.repo && \
+    dnf install -y "microshift-5.0.0~rc.${RC}" "microshift-release-info-5.0.0~rc.${RC}" \
+      "microshift-olm-5.0.0~rc.${RC}" "microshift-olm-release-info-5.0.0~rc.${RC}" \
+      firewalld jq skopeo && \
+    jq -e --arg expected "5.0.0-rc.${RC}" '.release.base == $expected' \
+      "/usr/share/microshift/release/release-${ARCH}.json" && \
+    rpm -q microshift microshift-release-info microshift-olm cri-o && \
+    rm /etc/yum.repos.d/microshift-rc.repo /etc/yum.repos.d/openshift-deps.repo && \
+    dnf clean all
+
+# Copy only networking integration; retain Red Hat's core/OLM release manifests
+# and CRI-O image configuration, including the authenticated RC pause image.
+COPY --from=networking /etc/crio/crio.conf.d/13-microshift-kindnet.conf /etc/crio/crio.conf.d/13-microshift-kindnet.conf
+COPY --from=networking /etc/systemd/system/microshift.service /etc/systemd/system/microshift.service
+COPY --from=networking /etc/microshift/config.d/00-disableDefaultCNI.yaml /etc/microshift/config.d/00-disableDefaultCNI.yaml
+COPY --from=networking /usr/lib/microshift/manifests.d/000-microshift-kindnet/ /usr/lib/microshift/manifests.d/000-microshift-kindnet/
+COPY --from=networking /usr/lib/microshift/manifests.d/000-microshift-kube-proxy/ /usr/lib/microshift/manifests.d/000-microshift-kube-proxy/
+COPY --from=networking /usr/share/microshift/release/release-kindnet-*.json /usr/share/microshift/release/
+COPY --from=networking /usr/share/microshift/release/release-kube-proxy-*.json /usr/share/microshift/release/
+COPY --from=networking /usr/libexec/cni/ /usr/libexec/cni/
+
+RUN firewall-offline-cmd --zone=trusted --add-source=10.42.0.0/16 && \
+    firewall-offline-cmd --zone=trusted --add-source=169.254.169.1 && \
+    firewall-offline-cmd --zone=public --add-port=6443/tcp && \
+    firewall-offline-cmd --zone=public --add-port=2379/tcp && \
+    firewall-offline-cmd --zone=public --add-port=2380/tcp && \
+    printf 'dns:\n  baseDomain: "127.0.0.1.nip.io"\n' > /etc/microshift/config.d/00-dns.yaml && \
+    printf 'storage:\n  driver: none\n' > /etc/microshift/config.d/10-storage.yaml && \
+    sed -i 's@value: 10.244.0.0/16@value: 10.42.0.0/16@' \
+      /usr/lib/microshift/manifests.d/000-microshift-kindnet/04-daemonset.yaml && \
+    systemctl disable openvswitch && \
+    systemctl mask ovs-vswitchd ovsdb-server microshift-ovs-init && \
+    systemctl enable microshift
+
+# Supply /etc/crio/openshift-pull-secret as a read-only runtime mount.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

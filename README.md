@@ -31,10 +31,24 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 
 | OCP | MicroShift | Console | Architectures |
 |-|-|-|-|
-| 5.0 (default) | 5.0.0-okd-scos.ec.8 | 5.0 | amd64, arm64 |
-| 4.22 | 4.22.0-okd-scos.ec.16 | 4.22 | amd64, arm64 |
-| 4.21 | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
-| 4.20 | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
+| 5.0 (pre-release) | 5.0.0-okd-scos.ec.8 | 5.0 | amd64, arm64 |
+| 4.22 (pre-release) | 4.22.0-okd-scos.ec.16 | 4.22 | amd64, arm64 |
+| 4.21 (pre-release) | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
+| 4.20 (default) | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
+
+All entries use **OKD MicroShift** builds. The OCP minor identifies the matching Console and API branch; it does not select a Red Hat OCP payload.
+
+The default is the newest stable catalogue pin. `ec` and `rc` builds require an explicit selection. To follow published builds:
+
+```bash
+oinc version list --remote                  # published oinc images and architectures
+oinc create --version 4@latest              # newest stable OKD build in supported 4.x minors
+oinc create --version @latest               # newest stable OKD build in any supported minor
+oinc create --version 5.0@next               # opt into 5.0 builds, including ec/rc
+oinc create --version 5.0.0-okd-scos.ec.8     # exact tag (requires a published image)
+```
+
+`@latest` excludes all `ec` and `rc` tags, including those under 4.x. `@next` includes them. These selectors query oinc's GHCR images for the host architecture; new upstream RPMs must first be built into an oinc image. They resolve once at create/switch time and do not update an existing cluster. See [version management](docs/versions.md).
 
 Use `/add-version` in Claude Code to add a new version, or see [docs/images.md](docs/images.md) for the manual process.
 
@@ -65,7 +79,7 @@ go install github.com/jasonmadigan/oinc/cmd/oinc@latest
 ## Quick start
 
 ```bash
-# create cluster (latest OCP version, auto-detect runtime)
+# create cluster (stable catalogue default, auto-detect runtime)
 oinc create
 
 # create with a specific version

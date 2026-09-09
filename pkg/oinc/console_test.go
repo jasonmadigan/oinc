@@ -5,6 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/jasonmadigan/oinc/pkg/runtime"
+	"github.com/jasonmadigan/oinc/pkg/version"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -325,5 +331,41 @@ func TestBuildConsoleProxyOptionsClearsRemovedProxies(t *testing.T) {
 	}
 	if config.Services == nil || len(config.Services) != 0 {
 		t.Errorf("generated proxy services = %#v, want an explicit empty list", config.Services)
+	}
+}
+
+// A fresh ARM host must request the architecture origin-console publishes,
+// even when MicroShift itself runs natively on ARM.
+func TestStartConsoleRequestsAMD64(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "docker")
+	capture := filepath.Join(dir, "args")
+	script := `#!/bin/sh
+case "$1" in
+  info) printf '{"CgroupVersion":"2"}';;
+  create) printf '%s\n' "$@" > "$OINC_TEST_ARGS";;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OINC_TEST_ARGS", capture)
+	rt, err := runtime.Detect(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ver, err := version.Resolve("5.0.0-okd-scos.ec.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := startConsoleContainer(rt, ver, "test-token", 9000, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "--platform\nlinux/amd64\n") {
+		t.Fatalf("Console launch did not request linux/amd64: %s", args)
 	}
 }

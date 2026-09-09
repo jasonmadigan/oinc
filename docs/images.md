@@ -6,6 +6,8 @@ Images published at `ghcr.io/jasonmadigan/oinc`.
 
 Tags follow the pattern: `<okd-version>-<arch>`, e.g. `5.0.0-okd-scos.ec.8-arm64`.
 
+For the separate, manually built Red Hat MicroShift rc0/rc1 container experiment, see [OCP release candidates](ocp-release-candidates.md). It uses kindnet and a runtime pull secret; it is not part of the OKD publishing workflow or CLI selectors.
+
 ## RPM sources
 
 Each version in the workflow matrix picks exactly one source:
@@ -32,6 +34,7 @@ Both paths end with a guard: the build fails unless the installed `microshift-re
 | Arg | Description | Example |
 |-|-|-|
 | `OCP_VERSION` | OCP version for openshift deps mirror URL | `5.0` |
+| `DEPS_VERSION` | override dependency mirror minor when RPM requirements differ from the payload | `5.1` |
 | `OKD_VERSION` | expected OKD tag, asserted against installed `microshift-release-info` | `5.0.0-okd-scos.ec.8` |
 | `RELEASE_TAG` | microshift-io GitHub release tag to install RPM tarballs from | `4.20.0_g153ff0ca9_4.20.0_okd_scos.16` |
 | `TARBALL_SHA256` | expected sha256 of the downloaded RPM tarball | `536d3081...` |
@@ -62,11 +65,29 @@ Matrix builds all version/arch combinations in parallel. Each job:
 
 Optional `version` input filters to a single OCP version.
 
+## Building a newer OKD release
+
+For a newer COPR build within a supported minor, dispatch the existing workflow with all four inputs. This example reproduces the current 5.0 pin; replace the OKD tag and COPR pin with a verified newer build when available:
+
+```bash
+gh workflow run images.yml \
+  -f version=5.0 \
+  -f okd_version=5.0.0-okd-scos.ec.8 \
+  -f copr_pin=5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9 \
+  -f deps_version=5.1
+```
+
+Verify the exact COPR pin exists for both architectures and choose the dependency minor required by its CRI-O dependency. The override selects COPR instead of any catalogue tarball source. The installed OKD-tag guard still runs. Each architecture publishes its exact OKD tag; no floating `latest` image is created. Failed pushes fail the workflow.
+
+Once published, `oinc version list --remote` discovers the image. Select its full OKD tag or use `5.0@next` for prereleases. Stable builds become eligible for `@latest`. No catalogue edit or CLI rebuild is required for an existing minor. This does not monitor COPR or automatically build upstream releases.
+
+For releases supplied as GitHub RPM tarballs, use the matrix's `release_tag` and per-architecture checksums as described below.
+
 ## Adding a new version
 
 1. Pick the RPM source. Prefer a [GitHub release](https://github.com/microshift-io/microshift/releases) whose tag matches the OKD version (`release_tag`), recording the sha256 of each `microshift-rpms-<arch>.tgz` asset (`tarball_sha256`). If none exists yet, find the matching build in the [nightly COPR](https://copr.fedorainfracloud.org/coprs/g/microshift-io/microshift-nightly/builds/) and note the exact version-release (`copr_pin`). Check the pin resolves for `epel-9-x86_64` and `epel-9-aarch64` in either the main or the `devel/` repodata, since a COPR build can succeed on one arch and not the other.
 
-2. Add matrix entries in `.github/workflows/images.yml` for both `amd64` and `arm64`, each with `okd_version` plus `release_tag` and `tarball_sha256`, or `copr_pin`
+2. Add the minor to the `version` input choices and matrix entries in `.github/workflows/images.yml` for both `amd64` and `arm64`, each with `okd_version` plus `release_tag` and `tarball_sha256`, or `copr_pin`
 
 3. Add catalogue entry in `pkg/version/version.go`:
    ```go

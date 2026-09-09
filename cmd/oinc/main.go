@@ -164,7 +164,7 @@ func main() {
 			}, logger)
 		},
 	}
-	createCmd.Flags().StringVar(&flagVersion, "version", "", "OCP version (default: latest)")
+	createCmd.Flags().StringVar(&flagVersion, "version", "", "version: minor, full OKD tag, [major/minor]@latest (stable), or @next (prereleases); default: stable catalogue pin")
 	createCmd.Flags().IntVar(&flagHTTPPort, "http-port", 9080, "HTTP route port")
 	createCmd.Flags().IntVar(&flagHTTPSPort, "https-port", 9443, "HTTPS route port")
 	createCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
@@ -240,24 +240,38 @@ func main() {
 		},
 	}
 
+	var flagRemoteVersions bool
 	versionListCmd := &cobra.Command{
 		Use:   "list",
-		Short: "List available OCP versions",
-		Run: func(cmd *cobra.Command, args []string) {
+		Short: "List OKD builds for supported OCP minors",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			versions := version.All()
+			if flagRemoteVersions {
+				var err error
+				versions, err = version.Published(cmd.Context())
+				if err != nil {
+					return err
+				}
+			}
 			def := version.Default()
 			var rows []string
-			for _, v := range version.All() {
+			for _, v := range versions {
 				marker := ""
-				if v.Version == def.Version {
+				if v.IsPrerelease() {
+					marker = "  " + tui.Dim.Render("[pre-release]")
+				}
+				if v.MicroShiftTag == def.MicroShiftTag {
 					marker = "  " + tui.Green.Render("[default]")
 				}
 				rows = append(rows, fmt.Sprintf("  %-6s %s%s",
-					v.Version, tui.Dim.Render(fmt.Sprintf("microshift: %s, console: %s", v.MicroShiftTag, v.ConsoleTag)), marker))
+					v.Version, tui.Dim.Render(fmt.Sprintf("microshift: %s, console: %s, arch: %s", v.MicroShiftTag, v.ConsoleTag, strings.Join(v.Arches, ","))), marker))
 			}
 			box := tui.Box.Render(strings.Join(rows, "\n"))
 			fmt.Println(indent(box, 2))
+			return nil
 		},
 	}
+	versionListCmd.Flags().BoolVar(&flagRemoteVersions, "remote", false, "list published oinc images from GHCR, including newer OKD builds")
 	versionCmd.AddCommand(versionListCmd)
 
 	switchCmd := &cobra.Command{
@@ -266,12 +280,16 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := newLogger(flagLogLevel)
-			logger.Info("switching version", "version", args[0])
+			ver, err := version.ResolveContext(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			logger.Info("switching version", "version", ver.Version)
 			if err := oinc.Delete(flagRuntime, logger); err != nil {
 				logger.Warn("delete failed, continuing", "err", err)
 			}
 			return oinc.Create(cmd.Context(), oinc.CreateOpts{
-				Version:         args[0],
+				Version:         ver.Version,
 				RuntimeOverride: flagRuntime,
 				HTTPPort:        flagHTTPPort,
 				HTTPSPort:       flagHTTPSPort,
@@ -477,9 +495,13 @@ func runVersionPicker() (string, error) {
 
 	var items []tui.VersionItem
 	for _, v := range all {
+		hint := "microshift: " + v.MicroShiftTag
+		if v.IsPrerelease() {
+			hint += " (pre-release)"
+		}
 		items = append(items, tui.VersionItem{
 			Version:   v.Version,
-			Hint:      "microshift: " + v.MicroShiftTag,
+			Hint:      hint,
 			IsDefault: v.Version == def.Version,
 		})
 	}
