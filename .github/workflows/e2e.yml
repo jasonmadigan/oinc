@@ -116,7 +116,7 @@ jobs:
 
       - name: Create cluster with instance options
         run: |
-          bin/oinc create --version 4.22 --runtime docker --addons kuadrant@latest \
+          bin/oinc create --version 4.22 --runtime docker --addons kuadrant@latest,mcp-gateway \
             --kuadrant-devportal --metallb-address-pool auto --gateway-api-gateway
 
       - name: Assert the portal field persisted on the kuadrant CR
@@ -148,14 +148,35 @@ jobs:
           test "$(kubectl --context oinc -n gateway-system get svc kuadrant-ingressgateway-istio \
             -o jsonpath='{.spec.loadBalancerClass}')" = "oinc.io/metallb"
 
+      - name: Assert the MCP gateway is programmed with a scoped Service
+        run: |
+          kubectl --context oinc -n gateway-system wait gateway.gateway.networking.k8s.io/mcp-gateway \
+            --for=condition=Programmed --timeout=120s
+          test -n "$(kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io mcp-gateway \
+            -o jsonpath='{.status.addresses[0].value}')"
+          test "$(kubectl --context oinc -n gateway-system get svc mcp-gateway-istio \
+            -o jsonpath='{.spec.loadBalancerClass}')" = "oinc.io/metallb"
+
+      - name: Verify the documented consumer Gateway configuration
+        run: |
+          kubectl --context oinc apply -f examples/gateway-metallb.yaml
+          kubectl --context oinc -n consumer-gateways wait gateway.gateway.networking.k8s.io/example-gateway \
+            --for=condition=Programmed --timeout=300s
+          test -n "$(kubectl --context oinc -n consumer-gateways get gateway.gateway.networking.k8s.io example-gateway \
+            -o jsonpath='{.status.addresses[0].value}')"
+          test "$(kubectl --context oinc -n consumer-gateways get svc example-gateway-istio \
+            -o jsonpath='{.spec.loadBalancerClass}')" = "oinc.io/metallb"
+
       - name: Assert router-default kept its service-lb ingress
         run: |
+          test -z "$(kubectl --context oinc -n openshift-ingress get svc router-default \
+            -o jsonpath='{.spec.loadBalancerClass}')"
           test -n "$(kubectl --context oinc -n openshift-ingress get svc router-default \
             -o jsonpath='{.status.loadBalancer.ingress}')"
 
       - name: Re-install addons with the same options (idempotence)
         run: |
-          bin/oinc addon install kuadrant@latest \
+          bin/oinc addon install kuadrant@latest,mcp-gateway \
             --kuadrant-devportal --metallb-address-pool auto --gateway-api-gateway
 
       - name: Dump state on failure
@@ -170,6 +191,8 @@ jobs:
           kubectl --context oinc -n metallb-system get ipaddresspool,l2advertisement -o yaml || true
           kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io,svc,deploy,pods -o wide || true
           kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io kuadrant-ingressgateway -o yaml || true
+          kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io mcp-gateway -o yaml || true
+          kubectl --context oinc -n consumer-gateways get gateway.gateway.networking.k8s.io,svc -o yaml || true
 
   # rhdh + postgres + microshift is memory-heavy, so this runs as its own
   # single leg (docker, pinned version) rather than in the smoke matrix

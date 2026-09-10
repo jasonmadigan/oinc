@@ -19,7 +19,95 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
 	k8stesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/yaml"
 )
+
+func TestMCPGatewayPrereqsConfigureServiceBeforeCreation(t *testing.T) {
+	client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+	client.PrependReactor("create", "gateways", func(action k8stesting.Action) (bool, kruntime.Object, error) {
+		gw := action.(k8stesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		ref, _, _ := unstructured.NestedMap(gw.Object, "spec", "infrastructure", "parametersRef")
+		name, _ := ref["name"].(string)
+		if name == "" || ref["kind"] != "ConfigMap" || ref["group"] != "" {
+			t.Errorf("Gateway must reference a Service overlay at creation, got %v", ref)
+			return false, nil, nil
+		}
+		// Read the tracker directly: client calls inside a reactor deadlock.
+		obj, err := client.Tracker().Get(configMapGVR, gw.GetNamespace(), name)
+		if err != nil {
+			t.Errorf("Service overlay must exist before Gateway creation: %v", err)
+			return false, nil, nil
+		}
+		overlay, _, _ := unstructured.NestedString(obj.(*unstructured.Unstructured).Object, "data", "service")
+		var service struct {
+			Spec struct {
+				LoadBalancerClass string `json:"loadBalancerClass"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(overlay), &service); err != nil {
+			t.Fatal(err)
+		}
+		if service.Spec.LoadBalancerClass != metalLBClass {
+			t.Errorf("Service class = %q, want %q", service.Spec.LoadBalancerClass, metalLBClass)
+		}
+		return false, nil, nil
+	})
+	cfg := &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := (&mcpGateway{}).ensureGatewayPrereqs(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	client.ClearActions()
+	if err := (&mcpGateway{}).ensureGatewayPrereqs(context.Background(), cfg); err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	for _, action := range client.Actions() {
+		if action.GetVerb() != "get" {
+			t.Errorf("reinstall changed an existing resource: %v", action)
+		}
+	}
+}
+
+func TestMCPGatewayRejectsExistingWithoutParams(t *testing.T) {
+	cfg := mcpGatewayReadyConfig(t, fakeMCPGateway(nil))
+	client := cfg.DynamicClient.(*dynamicfake.FakeDynamicClient)
+	client.ClearActions()
+	err := (&mcpGateway{}).ensureGatewayPrereqs(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected migration error for an existing Gateway without parameters")
+	}
+	for _, want := range []string{"gateway-system/mcp-gateway", "parametersRef", "immutable", "delete the gateway"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should contain %q", err, want)
+		}
+	}
+	for _, action := range client.Actions() {
+		if action.GetVerb() != "get" {
+			t.Errorf("migration must not mutate existing resources: %v", action)
+		}
+	}
+}
+
+func TestMCPReadinessRejectsUnprogrammedGateway(t *testing.T) {
+	gw := fakeGateway(false, "AddressNotAssigned", "address pending for hostname")
+	gw.SetName("mcp-gateway")
+	if err := unstructured.SetNestedSlice(gw.Object, []any{
+		map[string]any{"name": "mcp", "conditions": []any{
+			map[string]any{"type": "Accepted", "status": "True"},
+		}},
+	}, "status", "listeners"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := mcpGatewayReadyConfig(t, gw)
+	err := waitForMCPListener(context.Background(), cfg, 20*time.Millisecond, time.Millisecond)
+	if err == nil {
+		t.Fatal("MCP readiness succeeded with an accepted listener but Programmed=False")
+	}
+	for _, want := range []string{"Programmed", "AddressNotAssigned", "address pending for hostname"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should contain %q", err, want)
+		}
+	}
+}
 
 func TestMCPGatewayInstallReusesKuadrant(t *testing.T) {
 	for _, version := range []string{"", "0.9.0", "latest"} {
@@ -248,6 +336,8 @@ func fakeMCPGateway(listeners []map[string]any) *unstructured.Unstructured {
 	}
 	if listeners != nil {
 		obj["status"] = map[string]any{
+			"conditions": []any{map[string]any{"type": "Programmed", "status": "True"}},
+			"addresses":  []any{map[string]any{"type": "IPAddress", "value": "172.17.0.200"}},
 			"listeners": func() []any {
 				out := make([]any, len(listeners))
 				for i, l := range listeners {
@@ -275,6 +365,17 @@ func mcpGatewayReadyConfig(t *testing.T, gw *unstructured.Unstructured) *Config 
 }
 
 func TestWaitForMCPListenerReady(t *testing.T) {
+	t.Run("programmed without an address", func(t *testing.T) {
+		gw := fakeMCPGateway([]map[string]any{
+			{"name": "mcp", "conditions": []any{map[string]any{"type": "Accepted", "status": "True"}}},
+		})
+		unstructured.RemoveNestedField(gw.Object, "status", "addresses")
+		err := waitForMCPListener(context.Background(), mcpGatewayReadyConfig(t, gw), 20*time.Millisecond, time.Millisecond)
+		if err == nil || !strings.Contains(err.Error(), "no address assigned") {
+			t.Fatalf("expected missing address error, got %v", err)
+		}
+	})
+
 	t.Run("mcp listener accepted", func(t *testing.T) {
 		cfg := mcpGatewayReadyConfig(t, fakeMCPGateway([]map[string]any{
 			{

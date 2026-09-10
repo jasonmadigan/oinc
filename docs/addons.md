@@ -54,21 +54,23 @@ Uses `helm upgrade --install` for idempotency. Helm must be available in `$PATH`
 Recent Kuadrant operator builds (including `kuadrant@latest` after [Kuadrant/kuadrant-operator#2202](https://github.com/Kuadrant/kuadrant-operator/pull/2202)) deploy the MCP Gateway controller in `kuadrant-system` and manage its CRDs. They do not create a Gateway or `MCPGatewayExtension` instance. Request both addons to configure one:
 
 ```bash
-oinc create --addons kuadrant@latest,mcp-gateway
+oinc create --addons kuadrant@latest,mcp-gateway --metallb-address-pool auto
 ```
 
 The MCP addon checks the `MCPGatewayExtension` CRD's `app.kubernetes.io/managed-by` label. When Kuadrant owns it, oinc renders the chart with `controller.enabled=false` and applies only instance resources using server-side apply, without forcing ownership conflicts. It uses the API version served by the installed CRD: published charts can still render `v1alpha1` while the bundled controller serves `v1`. No standalone MCP Helm release, controller, RBAC, or CRDs are installed in this mode.
 
 oinc downloads the selected chart to a temporary directory before rendering the local archive. This keeps OCI registry progress messages out of the manifests, including with Helm 4.2.4, which prints them to stdout. The temporary files are removed when installation finishes or fails. Invalid manifests and unexpected controller resources still stop installation before any instance resources are applied.
 
-The `mcp-gateway@VERSION` option selects the chart used to render the instance, and `--mcp-gateway-values FILE` supplies its values overlay. Kuadrant controls the controller and broker images; chart image and controller settings do not override them. oinc forces `controller.enabled=false` after the overlay and keeps the instance's gateway port at 80. Values rendered into instance resources, such as the public host, backend ping interval and extension fields, still apply. Values used only by the controller deployment are ignored. Readiness checks the bundled controller and the gateway's accepted `mcp` listener; status requires an extension instance as well as the controller.
+The `mcp-gateway@VERSION` option selects the chart used to render the instance, and `--mcp-gateway-values FILE` supplies its values overlay. Kuadrant controls the controller and broker images; chart image and controller settings do not override them. oinc forces `controller.enabled=false` after the overlay and keeps the instance's gateway port at 80. Values rendered into instance resources, such as the public host, backend ping interval and extension fields, still apply. Values used only by the controller deployment are ignored. Readiness checks the controller, the Gateway's `Programmed=True` condition and assigned address, and its accepted `mcp` listener. A timeout includes the last programming condition reason and message, such as `AddressNotAssigned`. Status requires an extension instance as well as the controller.
+
+Before creating `gateway-system/mcp-gateway`, oinc creates the `mcp-gateway-params` ConfigMap and references it through `spec.infrastructure.parametersRef`. Its Service overlay sets `spec.loadBalancerClass: oinc.io/metallb` before Istio creates the Service. This applies to both managed and standalone installations. An address pool is required; use `--metallb-address-pool auto` or supply a pool yourself. Existing Gateways without infrastructure parameters stop installation with a recreate hint; see [migration from v0.4.3](#migration-from-v043).
 
 Older Kuadrant releases without bundled MCP support retain the standalone Helm installation, using chart 0.8.0 by default. A failed ownership lookup stops installation rather than attempting a second controller install.
 
 For an existing cluster whose MCP install failed with `conflict with "kuadrant-operator": .spec.versions`, rebuild or update oinc and run:
 
 ```bash
-oinc addon install kuadrant@latest,mcp-gateway
+oinc addon install kuadrant@latest,mcp-gateway --metallb-address-pool auto
 ```
 
 The interactive installer skips ready dependencies and configures the missing MCP instance. This does not migrate or uninstall an existing standalone MCP Helm release.
@@ -122,6 +124,30 @@ Mechanics worth knowing:
 - **Gateway address via the scoped metallb**: oinc's metallb only manages services with `spec.loadBalancerClass: oinc.io/metallb` (see below), and istio's auto-deployed gateway service would be class-less. The field is immutable after creation, so the addon creates a ConfigMap (`kuadrant-ingressgateway-params`) referenced from the Gateway's `spec.infrastructure.parametersRef`; istio's gateway deployment controller strategic-merges its `service` overlay into the rendered Service before first apply, so the Service is born with the class and the scoped metallb assigns it an address. The metallb scoping itself is untouched.
 - **Ordering**: `--gateway-api-gateway` gives the gateway-api addon dependencies on istio and metallb, so the Gateway is only created and waited on once istiod can deploy it and metallb can address it. Pair it with `--metallb-address-pool` (or a pre-existing pool), otherwise the Programmed wait times out.
 - **Idempotence**: all instances are create-if-absent; re-running `oinc addon install` with the same flags is a no-op for existing instances.
+
+### Consumer-created Istio Gateways
+
+`--metallb-address-pool auto` creates the pool; consumer Gateways must also opt their generated Services into `oinc.io/metallb`. Add a ConfigMap in each Gateway namespace and reference it in the Gateway manifest **before creating the Gateway**. Istio merges the ConfigMap's `service` overlay into the generated Service. This uses Istio's [documented infrastructure parameters](https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/#automated-deployment).
+
+[examples/gateway-metallb.yaml](../examples/gateway-metallb.yaml) is a complete namespace, ConfigMap, and Gateway example. From the repository root, with the addons and pool installed:
+
+```bash
+kubectl --context oinc apply -f examples/gateway-metallb.yaml
+kubectl --context oinc -n consumer-gateways wait gateway.gateway.networking.k8s.io/example-gateway \
+  --for=condition=Programmed --timeout=300s
+kubectl --context oinc -n consumer-gateways get svc example-gateway-istio \
+  -o jsonpath='{.spec.loadBalancerClass}{"\n"}{.status.loadBalancer.ingress}{"\n"}'
+```
+
+The Service should have class `oinc.io/metallb` and an ingress IP. Multiple Gateways can reference the same ConfigMap within one namespace. If a Gateway already has infrastructure parameters, add the Service class to its existing overlay. oinc configures its default and MCP Gateways automatically; it does not add infrastructure parameters to consumer manifests.
+
+### Migration from v0.4.3
+
+v0.4.3 disabled MetalLB class scoping when an address pool was requested. v0.5.2 keeps `--lb-class=oinc.io/metallb` even with a pool, protecting MicroShift's class-less `openshift-ingress/router-default` Service. Consumer manifests that previously relied on unscoped allocation need the infrastructure configuration above, including every demo and test Gateway namespace.
+
+For disposable clusters, update oinc and the consumer manifests, recreate the cluster with `--metallb-address-pool auto`, then apply those manifests. Back up anything that must survive cluster deletion.
+
+To retain a cluster, save the affected Gateway manifests and add the infrastructure parameters. Create their ConfigMaps first, delete each affected Gateway with foreground cascading deletion, wait for its generated Service to disappear, then recreate it from the updated manifest. This interrupts traffic through that Gateway. For addon-owned Gateways, rerun `oinc addon install` with the original addon and instance flags after deletion so oinc recreates them. Redirect stdout with `>/dev/null` to force the non-interactive installer; the interactive planner may otherwise skip MCP when its controller and extension still exist. The Service class must be configured at creation; changing an existing Service's class is not a migration strategy. Do not remove MetalLB's scoping or change `router-default`.
 
 ## OLM compatibility
 
