@@ -28,6 +28,8 @@ End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurre
 
 A separate `rhdh` job (single leg: docker, pinned version, since rhdh + postgres + microshift is memory-heavy) creates a cluster with the rhdh addon, waits for the rollout, then asserts the Route serves the app and guest auth issues a token.
 
+The `instances` job creates a fresh 4.22 cluster with `kuadrant@latest,mcp-gateway`, an automatic MetalLB pool, the default Gateway, and the developer portal. It checks that the default, MCP, and documented consumer Gateways are programmed with addresses and their generated Services use `oinc.io/metallb`. It also checks that `router-default` remains class-less with ingress status, then reinstalls the addons to exercise idempotence.
+
 ### CLI releases (`.github/workflows/release.yml`)
 
 Builds and releases CLI binaries. **Triggered by pushing a `v*` tag.**

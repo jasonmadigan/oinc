@@ -187,41 +187,6 @@ func (g *gatewayAPI) readyInstances(ctx context.Context, cfg *Config) error {
 // after creation, so the generated service must be rendered with it, and
 // without it the class-scoped metallb never assigns the gateway an address.
 func (g *gatewayAPI) ensureDefaultGateway(ctx context.Context, cfg *Config) error {
-	// a pre-existing gateway without the parametersRef (e.g. created by a
-	// consumer script before this option existed) has a class-less service
-	// already; the class cannot be added after creation, so fail fast rather
-	// than burn the programmed wait with a misleading pool hint
-	existing, err := cfg.DynamicClient.Resource(gatewayGVR).Namespace(gatewayNamespace).Get(ctx, gatewayName, metav1.GetOptions{})
-	if err == nil {
-		if ref, _, _ := unstructured.NestedString(existing.Object, "spec", "infrastructure", "parametersRef", "name"); ref == "" {
-			return fmt.Errorf("gateway %s/%s already exists without infrastructure.parametersRef, so its service cannot adopt the %s class (immutable after creation); delete the gateway and re-run so oinc can recreate it",
-				gatewayNamespace, gatewayName, metalLBClass)
-		}
-	} else if !errors.IsNotFound(err) {
-		return fmt.Errorf("checking for existing gateway: %w", err)
-	}
-
-	if err := ensureNamespace(ctx, cfg, gatewayNamespace); err != nil {
-		return fmt.Errorf("creating namespace %s: %w", gatewayNamespace, err)
-	}
-
-	params := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "v1",
-			"kind":       "ConfigMap",
-			"metadata": map[string]any{
-				"name":      gatewayInfraParams,
-				"namespace": gatewayNamespace,
-			},
-			"data": map[string]any{
-				"service": "spec:\n  loadBalancerClass: " + metalLBClass + "\n",
-			},
-		},
-	}
-	if err := ensureResource(ctx, cfg, configMapGVR, params); err != nil {
-		return err
-	}
-
 	gw := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "gateway.networking.k8s.io/v1",
@@ -232,13 +197,6 @@ func (g *gatewayAPI) ensureDefaultGateway(ctx context.Context, cfg *Config) erro
 			},
 			"spec": map[string]any{
 				"gatewayClassName": "istio",
-				"infrastructure": map[string]any{
-					"parametersRef": map[string]any{
-						"group": "",
-						"kind":  "ConfigMap",
-						"name":  gatewayInfraParams,
-					},
-				},
 				"listeners": []any{
 					map[string]any{
 						"name":     "http",
@@ -251,6 +209,56 @@ func (g *gatewayAPI) ensureDefaultGateway(ctx context.Context, cfg *Config) erro
 				},
 			},
 		},
+	}
+	return ensureMetalLBGateway(ctx, cfg, gw, gatewayInfraParams)
+}
+
+// ensureMetalLBGateway configures Istio's generated Service before the Gateway
+// can be reconciled. Both addon-created Gateways use this path because the
+// Service's loadBalancerClass cannot be changed once set.
+func ensureMetalLBGateway(ctx context.Context, cfg *Config, gw *unstructured.Unstructured, paramsName string) error {
+	namespace, name := gw.GetNamespace(), gw.GetName()
+	// a pre-existing gateway without the parametersRef (e.g. created by a
+	// consumer script before this option existed) has a class-less service
+	// already; the class cannot be added after creation, so fail fast rather
+	// than burn the programmed wait with a misleading pool hint
+	existing, err := cfg.DynamicClient.Resource(gatewayGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		if ref, _, _ := unstructured.NestedString(existing.Object, "spec", "infrastructure", "parametersRef", "name"); ref == "" {
+			return fmt.Errorf("gateway %s/%s already exists without infrastructure.parametersRef, so its service cannot adopt the %s class (immutable after creation); delete the gateway and re-run so oinc can recreate it",
+				namespace, name, metalLBClass)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("checking for existing gateway: %w", err)
+	}
+
+	if err := ensureNamespace(ctx, cfg, namespace); err != nil {
+		return fmt.Errorf("creating namespace %s: %w", namespace, err)
+	}
+
+	params := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]any{
+				"name":      paramsName,
+				"namespace": namespace,
+			},
+			"data": map[string]any{
+				"service": "spec:\n  loadBalancerClass: " + metalLBClass + "\n",
+			},
+		},
+	}
+	if err := ensureResource(ctx, cfg, configMapGVR, params); err != nil {
+		return err
+	}
+
+	if err := unstructured.SetNestedMap(gw.Object, map[string]any{
+		"group": "",
+		"kind":  "ConfigMap",
+		"name":  paramsName,
+	}, "spec", "infrastructure", "parametersRef"); err != nil {
+		return err
 	}
 	return ensureResource(ctx, cfg, gatewayGVR, gw)
 }
@@ -293,7 +301,7 @@ func gatewayProgrammedState(obj *unstructured.Unstructured) (bool, string) {
 			continue
 		}
 		if cm["status"] != "True" {
-			return false, fmt.Sprintf("reason=%v message=%v", cm["reason"], cm["message"])
+			return false, fmt.Sprintf("Programmed=%v reason=%v message=%v", cm["status"], cm["reason"], cm["message"])
 		}
 		addresses, _, _ := unstructured.NestedSlice(obj.Object, "status", "addresses")
 		if len(addresses) == 0 {
