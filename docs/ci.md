@@ -4,24 +4,27 @@
 
 ### Image builds (`.github/workflows/images.yml`)
 
-Builds MicroShift container images. **Manual dispatch only** (`workflow_dispatch`).
+Builds MicroShift and Console container images. **Manual dispatch only** (`workflow_dispatch`).
 
 - Triggered manually from GitHub Actions UI
 - Optional `version` input to build a single OCP minor (default: all)
-- Optional `okd_version`, `copr_pin` and `deps_version` inputs, supplied together with `version`, build a newer pinned COPR release within that minor without changing the matrix. See [image builds](images.md#building-a-newer-okd-release).
+- Optional `okd_version`, `copr_pin` and `deps_version` inputs, supplied together with `version`, build a newer pinned COPR release within a minor that does not use a source lock. See [image builds](images.md#building-a-newer-okd-release).
 - Matrix: version x arch (currently 4.20 + 4.21 + 4.22 + 5.0, each with amd64 + arm64 = 8 jobs)
 - ARM builds run on `ubuntu-24.04-arm` runners (native, no emulation)
 - Uses podman for builds (not docker)
+- 5.0 first builds RPMs from `images/5.0.json` on each native runner; COPR overrides are rejected for this source-locked version
 - Pushes to `ghcr.io/jasonmadigan/oinc`
+- A `console` job builds native Console images for architectures upstream does not publish (currently 5.0 arm64) and pushes them to `ghcr.io/jasonmadigan/oinc-console`. Custom OKD builds skip it. See [Console images](images.md#console-images).
 
 ### E2E smoke (`.github/workflows/e2e.yml`)
 
 End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurrency-cancelling superseded runs on the same ref. Docs-only changes (`*.md`, `docs/`) skip it.
 
-- Matrix over host runtime: docker and podman on `ubuntu-latest` (the podman leg runs rootful via sudo)
+- Matrix over host runtime (docker and podman on `ubuntu-latest`; the podman leg runs rootful via sudo) and catalogue version (4.22, 5.0)
 - Runs `go vet`, `go test`, builds the CLI
-- Creates a cluster with a pinned catalogue version
+- Creates a cluster with the matrix version; create waits for the Console, so this also checks it starts on amd64
 - Asserts skopeo is present in the oinc image
+- On 5.0, checks the embedded release lock, MicroShift/base/CRI-O minor versions and the node's Kubernetes version
 - Asserts `oinc load-image` rejects a ref missing host-side
 - Builds a trivial local image, loads it with `oinc load-image`, runs a pod from it with `imagePullPolicy: IfNotPresent`
 - Re-runs the load to prove idempotence

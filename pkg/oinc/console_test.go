@@ -334,9 +334,9 @@ func TestBuildConsoleProxyOptionsClearsRemovedProxies(t *testing.T) {
 	}
 }
 
-// A fresh ARM host must request the architecture origin-console publishes,
-// even when MicroShift itself runs natively on ARM.
-func TestStartConsoleRequestsAMD64(t *testing.T) {
+// The launch must use the catalogue's image and platform: origin-console
+// minors request amd64 even on ARM hosts, while 5.0 runs natively.
+func TestStartConsoleRequestsCatalogueImage(t *testing.T) {
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "docker")
 	capture := filepath.Join(dir, "args")
@@ -354,18 +354,24 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	ver, err := version.Resolve("5.0.0-okd-scos.ec.8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := startConsoleContainer(rt, ver, "test-token", 9000, "", nil); err != nil {
-		t.Fatal(err)
-	}
-	args, err := os.ReadFile(capture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "--platform\nlinux/amd64\n") {
-		t.Fatalf("Console launch did not request linux/amd64: %s", args)
+	for _, selector := range []string{"4.22", "5.0.0-okd-scos.1"} {
+		ver, err := version.Resolve(selector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := startConsoleContainer(rt, ver, "test-token", 9000, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		args, err := os.ReadFile(capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		image, platform := ver.ConsoleImageRef()
+		if selector == "4.22" && (image != version.ConsoleImage+":4.22" || platform != "linux/amd64") {
+			t.Fatalf("4.22 console = %s (%s), want origin-console on linux/amd64", image, platform)
+		}
+		if !strings.Contains(string(args), "--platform\n"+platform+"\n") || !strings.HasSuffix(string(args), "\n"+image+"\n") {
+			t.Fatalf("%s console launch did not request %s on %s: %s", selector, image, platform, args)
+		}
 	}
 }

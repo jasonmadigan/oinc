@@ -22,8 +22,10 @@ jobs:
       fail-fast: false
       matrix:
         runtime: [docker, podman]
+        version: ["4.22", "5.0"]
     env:
       CR: ${{ matrix.runtime }}
+      OINC_VERSION: ${{ matrix.version }}
       # podman must be rootful for oinc, so the podman leg runs everything
       # (oinc, podman, kubectl) under sudo; 'env' is a no-op stand-in on the
       # docker leg so commands can stay quoted
@@ -52,11 +54,22 @@ jobs:
           make build
 
       - name: Create cluster
-        run: '"$PREFIX" bin/oinc create --version 4.22 --runtime "$CR"'
+        run: '"$PREFIX" bin/oinc create --version "$OINC_VERSION" --runtime "$CR"'
         timeout-minutes: 10
 
       - name: Assert skopeo ships in the oinc image
         run: '"$PREFIX" "$CR" exec oinc sh -c "command -v skopeo"'
+
+      - name: Verify the 5.0 release composition
+        if: matrix.version == '5.0'
+        run: |
+          "$PREFIX" "$CR" exec oinc cat /usr/share/oinc/release.json > /tmp/oinc-release.json
+          cmp images/5.0.json /tmp/oinc-release.json
+          test "$("$PREFIX" "$CR" exec oinc rpm -q --qf '%{VERSION}' microshift | cut -d. -f1,2)" = "5.0"
+          test "$("$PREFIX" "$CR" exec oinc rpm -q --qf '%{VERSION}' cri-o | cut -d. -f1,2)" = "5.0"
+          test "$("$PREFIX" "$CR" exec oinc jq -r '.release.base | split(".")[0:2] | join(".")' /usr/share/microshift/release/release-x86_64.json)" = "5.0"
+          EXPECTED_KUBERNETES=$(python3 -c 'import json; print("v" + json.load(open("images/5.0.json"))["kubernetes_version"])')
+          test "$("$PREFIX" kubectl --context oinc get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')" = "$EXPECTED_KUBERNETES"
 
       - name: Reject a ref missing host-side
         run: |

@@ -15,7 +15,7 @@ The repository pattern is:
 https://mirror.openshift.com/pub/openshift-v5/{x86_64,aarch64}/microshift/ocp/5.0.0-rc.{0,1}/el9/os/
 ```
 
-Each includes MicroShift, release-info, networking and OLM packages. Both require CRI-O 5.0.x, rather than the 5.1 dependency override used by the current OKD COPR pin. On CentOS Stream 9, the OpenShift 5.0 dependency mirror and `centos-release-nfv-openvswitch` supplied the dependencies in the local rc1 build.
+Each includes MicroShift, release-info, networking and OLM packages. Both require CRI-O 5.0.x, rather than the 5.1 dependency override the OKD COPR builds need. On CentOS Stream 9, the OpenShift 5.0 dependency mirror and `centos-release-nfv-openvswitch` supplied the dependencies in the local rc1 build.
 
 Full OCP release payload metadata was also successfully read with `oc adm release info`, using the configured Red Hat pull secret:
 
@@ -24,7 +24,7 @@ Full OCP release payload metadata was also successfully read with `oc adm releas
 | `quay.io/openshift-release-dev/ocp-release:5.0.0-rc.0-aarch64` | `sha256:fb0823afd47b2b4db3cc8151e92f4d25c4aaabe4b544d07c9bc82137d359be22` |
 | `quay.io/openshift-release-dev/ocp-release:5.0.0-rc.1-aarch64` | `sha256:cc1fc81246eb447a4697542e4c4e90f20830117238fb83f24a4b577bdbc48b1d` |
 
-The release payloads include native ARM Console images. Those differ from the amd64-only community `quay.io/openshift/origin-console:5.0` image currently used by oinc. Pin a Console component through the matching payload's `console` image reference to test that exact RC.
+The release payloads include native ARM Console images. The OKD Console artifacts inspected for these experiments were amd64-only. Pin a Console component through the matching payload's `console` image reference to test that exact RC.
 
 The rc1 Console digest is `sha256:b1e4f3db8cc8ab852f208fca860384e30a20a52fdb774b02750702a21d78819f` in `quay.io/openshift-release-dev/ocp-v5.0-art-dev`. When launching it standalone, set `BRIDGE_BRANDING=ocp`: the bridge binary defaults to `okd`, even in this Red Hat image. The initial local launch omitted that setting and displayed OKD branding; the corrected launch serves `branding: ocp`. Identify the build by its payload digest, not its configurable logo.
 
@@ -62,7 +62,7 @@ Setting `network.cniPlugin: none` and copying oinc's kindnet/kube-proxy integrat
 | Console initial JS/CSS assets (six), branding and workload-list API | Passed | Passed |
 | Console API ConfigMap create/read/delete, with session CSRF handling | Passed | Passed |
 
-The same Console HTTP/assets/API checks passed against OKD ec.8 with the Stream 9 Console workaround below. The write test created a temporary ConfigMap in the smoke-test namespace, verified its contents, deleted it, and confirmed HTTP 404 afterwards. These checks exercised the HTTP server and authenticated Kubernetes proxy; they were not a browser UI walkthrough.
+The same Console HTTP/assets/API checks passed against OKD ec.8 with the since-removed Stream 9 Console workaround described below. The write test created a temporary ConfigMap in the smoke-test namespace, verified its contents, deleted it, and confirmed HTTP 404 afterwards. These checks exercised the HTTP server and authenticated Kubernetes proxy; they were not a browser UI walkthrough.
 
 This is **Red Hat MicroShift with community networking**, not full OCP or the default Red Hat networking configuration. It is useful for testing the RC APIs and components in a container. It does not establish OVN compatibility, persistent-volume behaviour, full OCP cluster-operator behaviour or Red Hat supportability. NetworkPolicy conformance and operator installation were not tested.
 
@@ -72,19 +72,9 @@ The pinned `5.0.0-okd-scos.ec.8` image was also booted alongside rc1 using `oinc
 
 [OKD ec.9](https://github.com/okd-project/okd/releases/tag/5.0.0-okd-scos.ec.9) was published on 9 September, but the available MicroShift COPR builds still targeted ec.8 when checked. The tested ec.8 RPM was `5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9`: its MicroShift base metadata reports `5.1.0-0.nightly-arm64-2026-08-20-025249`. This community build combines mainline MicroShift with OKD ec.8 components; it is not an exact counterpart of the Red Hat rc1 build.
 
-The CLI's Console step failed on ARM/OrbStack: `origin-console:5.0` exited with `Fatal glibc error: CPU does not support x86-64-v3`. Selecting `linux/amd64` fixes image selection but does not satisfy that base image's CPU requirement.
+The CLI's Console step failed on ARM/OrbStack: `origin-console:5.0` exited with `Fatal glibc error: CPU does not support x86-64-v3`. Selecting `linux/amd64` fixes image selection but does not satisfy that base image's CPU requirement. A local workaround copied the unchanged amd64 Console onto CentOS Stream 9; with the Console container replaced by hand, HTTP 200, JavaScript assets, `branding: okd` and the authenticated node-list API passed. It was never wired into the CLI, so the unmodified `oinc create` flow still failed. The native arm64 build under [OKD 5.0 GA](#okd-50-ga) replaced it.
 
-[images/Containerfile.console-stream9-experimental](../images/Containerfile.console-stream9-experimental) provides the tested local workaround. It copies the unchanged community Console binary and assets from the pinned 5.0 image onto CentOS Stream 9. It still runs as amd64 under emulation and uses no Red Hat image or pull secret:
-
-```bash
-docker build --platform=linux/amd64 \
-  -f images/Containerfile.console-stream9-experimental \
-  -t oinc-okd-console-test:5.0-stream9 .
-```
-
-The failed Console container was manually replaced with this image using the same private Bridge configuration. HTTP 200, JavaScript assets, `branding: okd` and the authenticated node-list API passed. This workaround is not wired into CLI image selection or publishing; recreating the Console through oinc still selects the original image. The complete unmodified `oinc create` flow therefore remains failing for 5.0 on this host, despite the working cluster and manually replaced Console.
-
-The three local test clusters use separate ports:
+The three test clusters used separate ports:
 
 | Configuration | Container | Console | API | HTTP / HTTPS ingress |
 |-|-|-|-|-|
@@ -92,18 +82,83 @@ The three local test clusters use separate ports:
 | Red Hat MicroShift rc1 with kindnet | `oinc-ocp-rc1` | 19000 | 16443 | 19080 / 19443 |
 | Red Hat MicroShift rc0 with kindnet | `oinc-ocp-rc0` | 29000 | 26443 | 29080 / 29443 |
 
-The normal `oinc` kubeconfig context selects OKD. Each Red Hat experiment uses its separate kubeconfig.
+The normal `oinc` kubeconfig context selected OKD. Each Red Hat experiment used its separate kubeconfig.
+
+## OKD 5.0 GA
+
+The following results describe the original 5.1-based experiment. It has been superseded in the draft by the [release-aligned source build](#release-aligned-50-build); these historical test results do not validate the replacement.
+
+Verified on 28 September 2026 on ARM/OrbStack (Apple Silicon, macOS).
+
+[OKD `5.0.0-okd-scos.0`](https://github.com/okd-project/okd/releases/tag/5.0.0-okd-scos.0) was released on 17 September: payload `quay.io/okd/scos-release@sha256:eca01dee0f0690a8149d58f0a8c7e3187f624d583c1b713dc660bd1b28c2dfbc`, Kubernetes 1.36.3. At the time, microshift-io had published no release tarball since January, so the experiment used COPR, which held six builds against this tag. The original catalogue pinned the newest, `5.1.0_202609280620_g9c06ead3b_5.0.0_okd_scos.0-1.el9` (COPR build 11043775), present in the main and `devel/` repodata for both architectures. Like ec.8, it is mainline MicroShift (base `5.1.0-0.nightly-arm64-2026-09-24-215747`, x86_64 `5.1.0-0.nightly-2026-09-24-133658`) with OKD components. The x86_64 component references replaced by the community packaging match the payload; arm64 uses microshift-io's rebuilt OKD images. This excludes the retained LVMS entry and separately supplied kindnet image. It requires `cri-o >= 5.1.0, < 5.2.0`, so that experiment used the 5.1 dependency mirror.
+
+The payload's Console, `quay.io/okd/scos-content@sha256:947e41d0b4af41f65107639d7ed9c49aacd5162b59cc2b79d48ad1d37ad701bf` (openshift/console `e15ec744`, on `release-5.0`), is amd64-only and based on CentOS Stream 10. On this host it fails exactly like `origin-console:5.0`, even for `/bin/sh`. The native arm64 image from `images/Containerfile.console` reports the same commit, version string (`v6.0.6-27128-ge15ec74467`), Go 1.26.7 toolchain, CGO setting and module graph (224 dependencies) as the upstream binary. Its 1802 static assets are byte-identical to upstream's.
+
+| Check (arm64, default `oinc create`) | Result |
+|-|-|
+| Installed RPMs, release-info and running component digests match the pin | Passed |
+| Node Ready and all nine base pods ready | Passed |
+| `oinc load-image`, Deployment from the loaded image | Passed |
+| Internal service DNS and HTTP | Passed |
+| HTTP through an OpenShift Route on host port 9080 | Passed |
+| Native arm64 Console running, with no restarts or errors in its log | Passed |
+| Console page, six initial JS/CSS assets, `branding: okd` | Passed |
+| Console proxy reads: nodes, Deployments, Pods | Passed |
+| ConfigMap create/read/delete through the Console proxy; POST without the CSRF token returns 403 | Passed |
+| Browser: Deployment details page renders live data | Passed |
+| `kuadrant@latest,mcp-gateway` with the developer portal, MetalLB pool and default Gateway; the e2e `instances` assertions | Passed |
+
+The table above used locally built images; GHCR held no 5.0 image at the time. The node reports Kubernetes `v1.36.4` and CRI-O `1.36.5`, newer than the payload's 1.36.3, because MicroShift is built from main and CRI-O comes from the 5.1 mirror. Browser console errors were limited to 404s for APIs MicroShift does not serve (`config.openshift.io`, `project.openshift.io`, `helm.openshift.io`, `image.openshift.io`, `metal3.io`) and a 500 from the OLM package-manifest check for `lightspeed-operator`, as there is no marketplace catalogue.
+
+New namespaces are labelled `pod-security.kubernetes.io/enforce: restricted`. Deployment pods were admitted after SCC mutation; a pod created directly by the admin user without a restricted `securityContext` was rejected.
+
+The amd64 Console and x86_64 component digests are anonymously pullable from quay.io. CRI-O pulled the arm64 components from `ghcr.io/microshift-io/okd` without credentials.
+
+On amd64 this host could only build the MicroShift image under emulation, installing `cri-o-5.1.0` and passing the release-info guard; the payload Console cannot run under emulation here.
+
+The first Console publish failed on the arm64 runner with `Exec format error`. podman 4.9, as installed on `ubuntu-24.04-arm`, applies a stage's `FROM --platform` to every later stage, so `--platform=linux/amd64` on the upstream stage made the build and final stages pull amd64 CentOS images. BuildKit does not do this, so the local build had passed. The Containerfile no longer sets a platform, since the digest names a single amd64 manifest, and the workflow now checks the built image's architecture before pushing.
+
+The images were then published from `9fb5eff`, all anonymously pullable:
+
+| Image | Digest |
+|-|-|
+| `ghcr.io/jasonmadigan/oinc:5.0.0-okd-scos.0-amd64` | `sha256:0f12726371660350ef317071a6fe9519d90d938c385489ffd5692d639aef922b` |
+| `ghcr.io/jasonmadigan/oinc:5.0.0-okd-scos.0-arm64` | `sha256:b0c8d05f08723072f32fdbe6c324126da4367ed226eabe7560eef62682775df3` |
+| `ghcr.io/jasonmadigan/oinc-console:5.0.0-okd-scos.0-arm64` | `sha256:a6eb0d6790bb372d3b3dc8bed40d064cf53b9269f46cfcf7f7dc5e017c28e50b` |
+
+With the local images removed, a default `oinc create` on this host pulled both arm64 images. The Console, proxy and CSRF checks and the addon assertions above passed again. On amd64, the e2e smoke legs (docker and podman) booted 5.0 with the payload Console, loaded an image and ran a pod.
+
+## Release-aligned 5.0 build
+
+The replacement uses the inputs in `images/5.0.json`: MicroShift `07ab806795491479323b6084c4375770e3c98266` (5.0 rc2 source, Kubernetes 1.36.3), pinned microshift-io packaging, the OKD 5.0 payloads by digest and CRI-O from the 5.0 mirror. Both architectures use the same source and build timestamp. The old COPR build is not an input. This remains community MicroShift with kindnet, and is not an official Red Hat GA binary or full OCP.
+
+The image revision is `5.0.0-okd-scos.0-oinc.1-<arch>`. Original tags remain historical artifacts; the new CLI excludes them from channel discovery. Replacement publication and native amd64 e2e verification are required before merge. A remote catalogue check on 29 September 2026 still found no replacement images.
+
+Verified locally on 28 September 2026 on native arm64 through Docker/OrbStack, using the tracked source builder and an unmodified `oinc create --version 5.0`:
+
+| Check | Result |
+|-|-|
+| Embedded release lock matches `images/5.0.json` | Passed |
+| MicroShift RPM and base release are 5.0; node runs Kubernetes 1.36.3 | Passed |
+| CRI-O RPM is from the 5.0 stream | Passed; package `5.0.0-202609212354.p2.gee69985.assembly.stream.el9`, upstream runtime 1.36.6 |
+| Node Ready and all nine platform pods ready, including OLM | Passed |
+| Load a local image and roll out a Deployment | Passed |
+| Internal service DNS/HTTP and external HTTP through an OpenShift Route | Passed |
+| Console HTML, six initial JS/CSS assets and proxied node/Pod/Deployment reads | Passed |
+| Console proxy ConfigMap create/read/delete; missing CSRF header rejected with 403 | Passed |
+
+The local image ID was `sha256:c81cf19f12de59dcac2a1804e5bd36f3d46de93e0385b73d65df03d3c1a8da65`. This run did not repeat the browser walkthrough or addon suite. CRI-O's upstream patch version differs from Kubernetes within the 1.36 line; the dependency mirror remains mutable. Build rejection checks also confirmed that neither the old 5.1 dependency mirror nor a 5.1 COPR pin can be used for a 5.0 image.
 
 ## Reproduce the experimental build
 
-[images/Containerfile.ocp-experimental](../images/Containerfile.ocp-experimental) is separate from the normal OKD image and publishing workflow. It accepts `RC=0` or `RC=1` and requires an existing oinc image as its networking source. The tested source was built with:
+[images/Containerfile.ocp-experimental](../images/Containerfile.ocp-experimental) is separate from the normal OKD image and publishing workflow. It accepts `RC=0` or `RC=1` and requires an existing oinc image as its networking source. The historical source was built with the command below before the 5.x minor guards were added. The current Containerfile intentionally rejects this 5.1/5.0 mix; use a retained historical image to repeat that experiment:
 
 ```bash
 docker build -f images/Containerfile -t oinc-local-test:5.0-arm64 \
   --build-arg OCP_VERSION=5.0 \
   --build-arg OKD_VERSION=5.0.0-okd-scos.ec.8 \
   --build-arg COPR_PIN=5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9 \
-  --build-arg DEPS_VERSION=5.1 .
+  --build-arg DEPS_VERSION=5.1 images/
 ```
 
 That COPR pin may be pruned upstream; retain the local image for repeat tests. These commands were tested on ARM. amd64 RC RPMs exist, but the container recipe has not been boot-tested on amd64.

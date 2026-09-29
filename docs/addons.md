@@ -95,7 +95,7 @@ The overlay is passed to helm after the addon's base values, so it wins on confl
 
 ### MicroShift quirks the addon owns
 
-- The chart defaults `dynamic-plugins-root` to an ephemeral 5Gi PVC; MicroShift has no storage provisioner, so it is overridden to an `emptyDir`. Because helm replaces the `extraVolumes` list wholesale, the addon re-declares the full seven-volume set the `install-dynamic-plugins` initContainer and main container mount (`dynamic-plugins-root`, `dynamic-plugins`, `dynamic-plugins-npmrc`, `dynamic-plugins-registry-auth`, `npmcacache`, `extensions-catalog`, `temp`); dropping any of them gets the Deployment rejected with orphan volumeMounts.
+- The chart defaults `dynamic-plugins-root` to an ephemeral 5Gi PVC; OINC's base image installs no storage provisioner, so it is overridden to an `emptyDir`. Because helm replaces the `extraVolumes` list wholesale, the addon re-declares the full seven-volume set the `install-dynamic-plugins` initContainer and main container mount (`dynamic-plugins-root`, `dynamic-plugins`, `dynamic-plugins-npmrc`, `dynamic-plugins-registry-auth`, `npmcacache`, `extensions-catalog`, `temp`); dropping any of them gets the Deployment rejected with orphan volumeMounts.
 - Postgres persistence is off (emptyDir) with a 2Gi ephemeral-storage limit; the chart default limit of 20Mi assumes a PVC and would evict the pod.
 - The Route is created with TLS disabled and an explicit host on the cluster ingress hostname, and the app's `baseUrl`/CORS origin are set to the externally mapped URL (RHDH bakes its external URL into app config).
 
@@ -123,7 +123,7 @@ Mechanics worth knowing:
 - **Portal field verification**: structural CRD pruning silently drops unknown fields, so a write can report success without taking effect. The addon re-reads the CR after writing and fails loud if `spec.components.developerPortal` did not persist, which means the installed kuadrant version predates the field; pin one that ships it (e.g. `kuadrant@latest`).
 - **Gateway address via the scoped metallb**: oinc's metallb only manages services with `spec.loadBalancerClass: oinc.io/metallb` (see below), and istio's auto-deployed gateway service would be class-less. The field is immutable after creation, so the addon creates a ConfigMap (`kuadrant-ingressgateway-params`) referenced from the Gateway's `spec.infrastructure.parametersRef`; istio's gateway deployment controller strategic-merges its `service` overlay into the rendered Service before first apply, so the Service is born with the class and the scoped metallb assigns it an address. The metallb scoping itself is untouched.
 - **Ordering**: `--gateway-api-gateway` gives the gateway-api addon dependencies on istio and metallb, so the Gateway is only created and waited on once istiod can deploy it and metallb can address it. Pair it with `--metallb-address-pool` (or a pre-existing pool), otherwise the Programmed wait times out.
-- **Idempotence**: all instances are create-if-absent; re-running `oinc addon install` with the same flags is a no-op for existing instances.
+- **Idempotence**: pools and Gateways are created if absent. Enabling the developer portal can patch an existing Kuadrant CR; re-running installation also performs readiness checks. The interactive planner can skip already-ready addons, as described above.
 
 ### Consumer-created Istio Gateways
 
@@ -151,7 +151,7 @@ To retain a cluster, save the affected Gateway manifests and add the infrastruct
 
 ## OLM compatibility
 
-MicroShift ships OLM, but its bundled version uses an older catalogue format that's incompatible with the FBC (File-Based Catalogue) images from OperatorHub (`quay.io/operatorhubio/catalog:latest`). The Sail operator's own catalogue also requires authentication. Most addons therefore use direct manifests or Helm. `kuadrant@latest` uses OLM with Kuadrant's compatible `quay.io/kuadrant/kuadrant-operator-catalog:latest` catalogue; pinned Kuadrant releases use Helm.
+OINC includes OLM but installs most addons through manifests or Helm. `kuadrant@latest` uses the `quay.io/kuadrant/kuadrant-operator-catalog:latest` catalogue; pinned Kuadrant releases use Helm. Validate catalogue format support, registry authentication and operator installation for the selected artifacts and MicroShift build. The presence of OLM alone does not establish those properties.
 
 ## Version pinning
 

@@ -163,7 +163,25 @@ func TestStableChannels(t *testing.T) {
 			t.Errorf("series %q prereleases=%v: %+v, %v, want %s", tt.series, tt.prereleases, got, err, tt.want)
 		}
 	}
-	if Default().Version != "4.20" || Default().IsPrerelease() {
+	if Default().Version != "5.0" || Default().IsPrerelease() {
 		t.Fatalf("unstable default: %+v", Default())
+	}
+}
+
+func TestPublishedReplacementRequiresItsOwnArchitecture(t *testing.T) {
+	old := []string{"5.0.0-okd-scos.0-arm64", "5.0.0-okd-scos.0-amd64", "4.20-arm64", "5.0-arm64"}
+	if got := versionsFromTags(old); len(got) != 0 {
+		t.Fatalf("superseded mixed-version images remain selectable: %+v", got)
+	}
+	versions := versionsFromTags(append(old, "5.0.0-okd-scos.0-oinc.1-arm64"))
+	if len(versions) != 1 || !reflect.DeepEqual(versions[0].Arches, []string{"arm64"}) {
+		t.Fatalf("wrong published replacement architectures: %+v", versions)
+	}
+	if _, err := latestFor(versions, "5.0", "amd64", false); err == nil {
+		t.Fatal("amd64 channel fell back to the superseded build")
+	}
+	arm, err := latestFor(versions, "5.0", "arm64", false)
+	if err != nil || arm.imageTag() != "5.0.0-okd-scos.0-oinc.1" {
+		t.Fatalf("wrong replacement selection: %+v, %v", arm, err)
 	}
 }

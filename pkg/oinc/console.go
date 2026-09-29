@@ -281,11 +281,11 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		}
 	}
 
+	image, platform := ver.ConsoleImageRef()
 	opts := runtime.ContainerOpts{
-		Name:  consoleContainer,
-		Image: ver.ConsoleImageRef(),
-		// origin-console publishes amd64 images, even for native ARM clusters.
-		Platform: "linux/amd64",
+		Name:     consoleContainer,
+		Image:    image,
+		Platform: platform,
 		Env:      env,
 	}
 	if proxyOptions != nil {

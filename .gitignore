@@ -1,3 +1,5 @@
 bin/
 CLAUDE.md
 PLAN.md
+images/rpms/*
+!images/rpms/.gitkeep

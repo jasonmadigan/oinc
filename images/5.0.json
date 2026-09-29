@@ -1,0 +1,16 @@
+{
+  "okd_version": "5.0.0-okd-scos.0",
+  "image_tag": "5.0.0-okd-scos.0-oinc.1",
+  "microshift_commit": "07ab806795491479323b6084c4375770e3c98266",
+  "microshift_source_release": "5.0.0-rc.2-202609111451.p0",
+  "packaging_commit": "b520d54da1bc5f0e48a99057c5cb018b2893b7d0",
+  "build_timestamp": "202609111451",
+  "go_version": "1.26.7",
+  "microshift_minor": "5.0",
+  "crio_minor": "5.0",
+  "kubernetes_version": "1.36.3",
+  "payloads": {
+    "x86_64": "quay.io/okd/scos-release@sha256:eca01dee0f0690a8149d58f0a8c7e3187f624d583c1b713dc660bd1b28c2dfbc",
+    "aarch64": "ghcr.io/microshift-io/okd/okd-release-arm64@sha256:ee67ef7fc1f6329f727dbee8551efbbfcd693bc170b580b2c1668876c8e8d683"
+  }
+}
