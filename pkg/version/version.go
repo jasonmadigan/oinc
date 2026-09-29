@@ -8,13 +8,14 @@ import (
 )
 
 type OCPVersion struct {
-	Version       string            // minor version or full OKD tag
-	MicroShiftTag string            // "4.18.0-okd-scos.9" (arch appended at runtime)
-	ImageTag      string            // optional OINC build revision for the same payload
-	ConsoleTag    string            // "4.18"
-	ConsoleImages map[string]string // per-arch console refs, replacing origin-console:ConsoleTag
-	APIBranch     string            // "release-4.18"
-	Arches        []string          // supported architectures
+	RequiresPullSecret bool              // Red Hat preview; excluded from OKD release channels
+	Version            string            // minor version or full OKD tag
+	MicroShiftTag      string            // "4.18.0-okd-scos.9" (arch appended at runtime)
+	ImageTag           string            // optional OINC build revision for the same payload
+	ConsoleTag         string            // "4.18"
+	ConsoleImages      map[string]string // per-arch console refs, replacing origin-console:ConsoleTag
+	APIBranch          string            // "release-4.18"
+	Arches             []string          // supported architectures
 }
 
 var catalogue = []OCPVersion{
@@ -55,7 +56,23 @@ var catalogue = []OCPVersion{
 	},
 }
 
-func All() []OCPVersion { return catalogue }
+var redHatCatalogue = []OCPVersion{
+	{
+		Version:       "ocp-4.23",
+		MicroShiftTag: "4.23.0-ec.1",
+		ImageTag:      "ocp-4.23.0-ec.1",
+		ConsoleTag:    "4.23",
+		ConsoleImages: map[string]string{
+			"amd64": "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:f116792bea2df6fdea9d26770e502ded47f616dad57c5283ed6307be11b70d79",
+			"arm64": "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:a4063e6079afc7f2e4ba8b166a7da27412cec39610b4883028415aac29fdde12",
+		},
+		APIBranch:          "release-4.23",
+		Arches:             []string{"amd64", "arm64"},
+		RequiresPullSecret: true,
+	},
+}
+
+func All() []OCPVersion { return append(append([]OCPVersion{}, catalogue...), redHatCatalogue...) }
 
 // Default remains an offline pin to the newest stable catalogue entry.
 func Default() OCPVersion {
@@ -68,7 +85,7 @@ func Default() OCPVersion {
 }
 
 func (v OCPVersion) IsPrerelease() bool {
-	return strings.Contains(v.MicroShiftTag, "-okd-scos.ec.") || strings.Contains(v.MicroShiftTag, "-okd-scos.rc.")
+	return strings.Contains(v.MicroShiftTag, "-ec.") || strings.Contains(v.MicroShiftTag, "-rc.") || strings.Contains(v.MicroShiftTag, "-okd-scos.ec.") || strings.Contains(v.MicroShiftTag, "-okd-scos.rc.")
 }
 
 var okdTagPattern = regexp.MustCompile(`^([0-9]+\.[0-9]+)\.[0-9]+-okd-scos\.(?:(?:ec|rc)\.)?[0-9]+$`)
@@ -76,6 +93,11 @@ var okdTagPattern = regexp.MustCompile(`^([0-9]+\.[0-9]+)\.[0-9]+-okd-scos\.(?:(
 func Resolve(v string) (OCPVersion, error) {
 	if v == "" {
 		return Default(), nil
+	}
+	for _, ver := range redHatCatalogue {
+		if v == ver.Version || v == ver.ImageTag {
+			return ver, nil
+		}
 	}
 	for _, ver := range catalogue {
 		if ver.Version == v {
@@ -97,7 +119,7 @@ func Resolve(v string) (OCPVersion, error) {
 		}
 	}
 	var available []string
-	for _, ver := range catalogue {
+	for _, ver := range All() {
 		available = append(available, ver.Version)
 	}
 	return OCPVersion{}, fmt.Errorf("version %s not available. available minors: %v; or use a full OKD tag for one of these minors (oinc version list --remote)", v, available)
@@ -177,7 +199,7 @@ func ResolveFromImage(image string) (OCPVersion, bool) {
 			return OCPVersion{}, false
 		}
 	}
-	for _, v := range catalogue {
+	for _, v := range All() {
 		if tag == v.MicroShiftTag || tag == v.imageTag() {
 			return v, true
 		}

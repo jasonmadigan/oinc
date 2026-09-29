@@ -94,3 +94,7 @@ When a new version is added, these things may need updating:
 | Addon versions | `pkg/addons/*.go` | cert-manager, metallb, etc. are pinned independently |
 
 Only the ConsolePlugin CRD URL derives from `APIBranch`. Image references and addon versions have their own pins and need separate compatibility checks.
+
+## Red Hat preview
+
+Use `oinc pull-secret set <path>` followed by `oinc create --version ocp-4.23` for Red Hat MicroShift `4.23.0-ec.1`. The exact selector is `ocp-4.23.0-ec.1`; switch with `oinc switch ocp-4.23`. This preview has separate image tags and requires registry credentials. It is listed by `oinc version list`, while remote channels and `version list --remote` remain OKD-only. See [setup, inputs and limitations](ocp-4.23.md).

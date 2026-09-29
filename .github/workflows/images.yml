@@ -6,7 +6,7 @@ on:
       version:
         description: "OCP minor to build (all = every catalogue pin)"
         type: choice
-        options: ["all", "4.20", "4.21", "4.22", "5.0"]
+        options: ["all", "4.20", "4.21", "4.22", "5.0", "ocp-4.23"]
         default: "all"
       okd_version:
         description: "Optional full OKD tag to build instead of the catalogue pin (requires version, copr_pin and deps_version)"
@@ -264,3 +264,40 @@ jobs:
             sleep 10
           done
           exit 1
+
+  ocp-preview:
+    if: inputs.version == 'ocp-4.23' || inputs.version == 'all' || inputs.version == ''
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:ocp-4.23.0-ec.1-${{ matrix.arch }}
+      NETWORKING_IMAGE: ghcr.io/${{ github.repository }}:5.0.0-okd-scos.0-oinc.1-${{ matrix.arch }}
+      BUILD_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Reject OKD overrides
+        env:
+          OVERRIDES: ${{ inputs.okd_version }}${{ inputs.copr_pin }}${{ inputs.deps_version }}
+        run: test -z "$OVERRIDES"
+      - uses: actions/checkout@v5
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+      - name: Build image from public RPMs
+        run: |
+          sudo podman build --build-arg OKD_NETWORKING_IMAGE="$NETWORKING_IMAGE" \
+            -f images/Containerfile.ocp -t "$IMAGE" images/
+          test "$(sudo podman image inspect --format '{{.Architecture}}' "$IMAGE")" = "$BUILD_ARCH"
+      - name: Login to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push image
+        run: sudo podman push "$IMAGE"
