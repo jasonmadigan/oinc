@@ -94,3 +94,45 @@ func TestFullTagCompatibility(t *testing.T) {
 		t.Fatalf("image = %s, want %s", v.MicroShiftImage(), want)
 	}
 }
+
+func TestReplacementImage(t *testing.T) {
+	for _, selector := range []string{"5.0", "5.0.0-okd-scos.0"} {
+		v, err := Resolve(selector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ImageRegistry + ":5.0.0-okd-scos.0-oinc.1-" + v.Arch()
+		if v.MicroShiftImage() != want {
+			t.Fatalf("%s selected %s, want %s", selector, v.MicroShiftImage(), want)
+		}
+		if found, ok := ResolveFromImage(want); !ok || found.Version != "5.0" {
+			t.Fatalf("replacement image not recognised: %+v, %v", found, ok)
+		}
+	}
+}
+
+func TestConsoleImageFor(t *testing.T) {
+	legacy, err := Resolve("4.22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arch := range []string{"amd64", "arm64"} {
+		if image, platform := legacy.consoleImageFor(arch); image != ConsoleImage+":4.22" || platform != "linux/amd64" {
+			t.Errorf("4.22 on %s: %s (%s), want origin-console on linux/amd64", arch, image, platform)
+		}
+	}
+	// newer 5.0 builds reuse the minor's console
+	v, err := Resolve("5.0.0-okd-scos.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ arch, image, platform string }{
+		{"amd64", "quay.io/okd/scos-content@sha256:947e41d0b4af41f65107639d7ed9c49aacd5162b59cc2b79d48ad1d37ad701bf", "linux/amd64"},
+		{"arm64", ConsoleRegistry + ":5.0.0-okd-scos.0-arm64", "linux/arm64"},
+		{"s390x", "quay.io/okd/scos-content@sha256:947e41d0b4af41f65107639d7ed9c49aacd5162b59cc2b79d48ad1d37ad701bf", "linux/amd64"},
+	} {
+		if image, platform := v.consoleImageFor(tt.arch); image != tt.image || platform != tt.platform {
+			t.Errorf("5.0 on %s: %s (%s), want %s (%s)", tt.arch, image, platform, tt.image, tt.platform)
+		}
+	}
+}

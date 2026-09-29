@@ -1,0 +1,34 @@
+# native console for architectures upstream does not publish.
+# bridge is rebuilt from the upstream image's source commit with the el9 go
+# toolset upstream builds with; frontend assets are copied unchanged.
+ARG CONSOLE_IMAGE
+# no --platform: the digest names a single amd64 manifest, and podman 4.9
+# applies a stage's --platform to every later stage
+FROM ${CONSOLE_IMAGE} AS upstream
+
+FROM quay.io/centos/centos:stream9 AS build
+ARG CONSOLE_COMMIT
+COPY --from=upstream /opt/bridge/bin/bridge /tmp/upstream-bridge
+# the upstream version string ends in -g<abbreviated commit>; reuse it and fail
+# unless it names CONSOLE_COMMIT
+RUN if [ -z "${CONSOLE_COMMIT}" ]; then \
+        echo "CONSOLE_COMMIT is required" >&2; exit 1; \
+    fi && \
+    dnf install -y git golang gcc && \
+    GIT_TAG=$(go version -m /tmp/upstream-bridge | sed -n 's/.*pkg\/version\.Version=\([^ "]*\).*/\1/p') && \
+    SHORT="${GIT_TAG##*-g}" && \
+    if ! echo "${SHORT}" | grep -Eq '^[0-9a-f]{7,40}$' || \
+       [ "${CONSOLE_COMMIT#"${SHORT}"}" = "${CONSOLE_COMMIT}" ]; then \
+        echo "upstream bridge version ${GIT_TAG:-(none)} does not name ${CONSOLE_COMMIT}" >&2; exit 1; \
+    fi && \
+    git init -q /src && \
+    git -C /src fetch -q --depth 1 https://github.com/openshift/console "${CONSOLE_COMMIT}" && \
+    git -C /src checkout -q FETCH_HEAD && \
+    cd /src && CGO_ENABLED=1 SOURCE_GIT_TAG="${GIT_TAG}" ./build-backend.sh && \
+    dnf clean all
+
+FROM quay.io/centos/centos:stream10
+COPY --from=upstream /opt/bridge/static /opt/bridge/static
+COPY --from=build /src/bin/bridge /opt/bridge/bin/bridge
+USER 1001
+CMD ["/opt/bridge/bin/bridge", "--public-dir=/opt/bridge/static"]

@@ -20,32 +20,38 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 ## Features
 
 - **Auto-detects container runtime** (docker, podman) -- no flags needed
-- **Version switching** -- `oinc create --version 4.20` to target a specific OCP release
+- **Version selection** -- `oinc create --version 4.20` for a fresh cluster; `oinc switch 4.20` recreates an existing cluster
 - **Console included** -- OpenShift Console runs as a sidecar, no separate setup
-- **OLM included** -- baked into the image, operator workflows work out of the box
+- **OLM included** -- baked into the image; operator installation requires a compatible catalogue and operator
 - **Addon system** -- layer on Gateway API, cert-manager, MetalLB, Istio, Kuadrant as needed
 - **Console plugin support** -- `--console-plugin "my-plugin=http://localhost:9001"` for plugin dev
 - **Interactive TUI** -- step-by-step progress with spinners, interactive addon picker, live status dashboard
 
 ## Supported versions
 
-| OCP | MicroShift | Console | Architectures |
+| OCP | OKD component payload | Console | Architectures |
 |-|-|-|-|
-| 5.0 (pre-release) | 5.0.0-okd-scos.ec.8 | 5.0 | amd64, arm64 |
+| 5.0 (default) | 5.0.0-okd-scos.0 | 5.0.0-okd-scos.0 payload | amd64, arm64 |
 | 4.22 (pre-release) | 4.22.0-okd-scos.ec.16 | 4.22 | amd64, arm64 |
 | 4.21 (pre-release) | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
-| 4.20 (default) | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
+| 4.20 | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
 
 All entries use **OKD MicroShift** builds. The OCP minor identifies the matching Console and API branch; it does not select a Red Hat OCP payload.
 
-The default is the newest stable catalogue pin. `ec` and `rc` builds require an explicit selection. To follow published builds:
+The 5.0 image builds MicroShift from a pinned `release-5.0` commit (the upstream rc2 source), with Kubernetes 1.36.3, CRI-O 5.0 RPMs and OKD 5.0 payload images. This is a community build, not a Red Hat MicroShift GA binary. Its `-oinc.1` image revision replaces the earlier 5.1-based experiment; the CLI excludes the superseded image from remote selection. See [release inputs](images/5.0.json) and [build details](docs/images.md#release-aligned-source-builds).
+
+Draft status, checked 29 September 2026: the replacement has been built and tested locally on arm64. Publication and native amd64 validation remain pending, so this branch's default create requires a locally built replacement image. The table lists catalogue targets, not completed validation of both replacement architectures.
+
+Up to 4.22 the Console is the amd64-only `origin-console` image, emulated on ARM. 5.0's Console cannot run under that emulation, so ARM hosts get a native build of the same source. See [Console images](docs/images.md#console-images).
+
+The default is the newest stable OKD payload pin in the catalogue. Payload tags containing `ec` or `rc` require an explicit selection; this classification does not describe the MicroShift source's release status. To follow published builds:
 
 ```bash
 oinc version list --remote                  # published oinc images and architectures
 oinc create --version 4@latest              # newest stable OKD build in supported 4.x minors
 oinc create --version @latest               # newest stable OKD build in any supported minor
 oinc create --version 5.0@next               # opt into 5.0 builds, including ec/rc
-oinc create --version 5.0.0-okd-scos.ec.8     # exact tag (requires a published image)
+oinc create --version 5.0.0-okd-scos.0        # exact payload (replacement image must be local or published)
 ```
 
 `@latest` excludes all `ec` and `rc` tags, including those under 4.x. `@next` includes them. These selectors query oinc's GHCR images for the host architecture; new upstream RPMs must first be built into an oinc image. They resolve once at create/switch time and do not update an existing cluster. See [version management](docs/versions.md).
@@ -249,9 +255,8 @@ The command reads `ConsolePlugin.spec.proxy`, creates OINC-only LoadBalancer
 shadow Services so the Console container can reach the in-cluster backends,
 mounts the OpenShift service CA, and restarts the standalone Console. It does
 not change the product deployment contract: the plugin operator remains the
-source of truth for the backend Service and `ConsolePlugin` resource. The
-`metallb` addon must have an address pool; `--metallb-address-pool auto` is the
-simplest development setup. Reload the browser after the Console restarts.
+source of truth for the backend Service and `ConsolePlugin` resource.
+Reload the browser after the Console restarts.
 
 ## Ports
 
@@ -259,8 +264,8 @@ simplest development setup. Reload the browser after the Console restarts.
 | ------ | ----------------------------------- |
 | `6443` | Kubernetes API server               |
 | `9000` | OpenShift Console                   |
-| `9080` | Ingress HTTP (Routes, Gateway API)  |
-| `9443` | Ingress HTTPS (Routes, Gateway API) |
+| `9080` | OpenShift Route HTTP                |
+| `9443` | OpenShift Route HTTPS               |
 
 ## Requirements
 

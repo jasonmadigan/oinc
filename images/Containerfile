@@ -7,27 +7,44 @@ ARG DEPS_VERSION=""
 ARG RELEASE_TAG=""
 ARG TARBALL_SHA256=""
 ARG COPR_PIN=""
+ARG LOCAL_RPMS=0
 ARG WITH_OLM=1
 
 # rpm source is exactly one of:
 #   RELEASE_TAG: microshift-io github release rpm tarball (released versions, sha256-pinned)
 #   COPR_PIN: exact version-release from the nightly copr (pre-release only, copr prunes old builds)
+#   LOCAL_RPMS=1: release-aligned source build in the rpms/ context directory
 # the copr project runs in devel mode: new builds only land in the devel/ repodata
 # until the owner regenerates the main repo, so both are enabled and either may
 # carry the pin. guard asserts installed release-info carries OKD_VERSION so
 # source drift fails the build.
 # the deps mirror directory tracks the cri-o the rpm was built against, which is
 # not always the payload version, so DEPS_VERSION overrides it when they differ
-RUN ARCH=$(uname -m) && \
+RUN --mount=type=bind,source=rpms,target=/mnt/rpms \
+    ARCH=$(uname -m) && \
     if [ -z "${OCP_VERSION}" ]; then \
         echo "OCP_VERSION is required" >&2; exit 1; \
     fi && \
     if [ -z "${OKD_VERSION}" ]; then \
         echo "OKD_VERSION is required" >&2; exit 1; \
     fi && \
-    if { [ -n "${RELEASE_TAG}" ] && [ -n "${COPR_PIN}" ]; } || \
-       { [ -z "${RELEASE_TAG}" ] && [ -z "${COPR_PIN}" ]; }; then \
-        echo "exactly one of RELEASE_TAG or COPR_PIN is required" >&2; exit 1; \
+    case "${OCP_VERSION}" in \
+      5.*) \
+        if [ "${DEPS_VERSION:-${OCP_VERSION}}" != "${OCP_VERSION}" ]; then \
+          echo "${OCP_VERSION} requires the matching dependency mirror, not ${DEPS_VERSION}" >&2; exit 1; \
+        fi && \
+        case "${COPR_PIN}" in \
+          ""|"${OCP_VERSION}."*) true ;; \
+          *) echo "COPR pin ${COPR_PIN} does not target MicroShift ${OCP_VERSION}" >&2; exit 1 ;; \
+        esac ;; \
+      *) true ;; \
+    esac && \
+    SOURCES=0 && \
+    if [ -n "${RELEASE_TAG}" ]; then SOURCES=$((SOURCES + 1)); fi && \
+    if [ -n "${COPR_PIN}" ]; then SOURCES=$((SOURCES + 1)); fi && \
+    if [ "${LOCAL_RPMS}" = "1" ]; then SOURCES=$((SOURCES + 1)); fi && \
+    if [ "${SOURCES}" != "1" ]; then \
+        echo "exactly one of RELEASE_TAG, COPR_PIN or LOCAL_RPMS=1 is required" >&2; exit 1; \
     fi && \
     if [ -n "${RELEASE_TAG}" ] && [ -z "${TARBALL_SHA256}" ]; then \
         echo "TARBALL_SHA256 is required with RELEASE_TAG" >&2; exit 1; \
@@ -35,7 +52,12 @@ RUN ARCH=$(uname -m) && \
     printf '[openshift-deps]\nname=OpenShift Dependencies\nbaseurl=https://mirror.openshift.com/pub/openshift-v4/%s/dependencies/rpms/%s-el9-beta/\nenabled=1\ngpgcheck=0\n' \
       "$ARCH" "${DEPS_VERSION:-${OCP_VERSION}}" \
       > /etc/yum.repos.d/openshift-deps.repo && \
-    if [ -n "${RELEASE_TAG}" ]; then \
+    if [ "${LOCAL_RPMS}" = "1" ]; then \
+        test -f /mnt/rpms/oinc-release.json && \
+        printf '[microshift-local]\nname=MicroShift Local\nbaseurl=file:///mnt/rpms\nenabled=1\ngpgcheck=0\n' \
+          > /etc/yum.repos.d/microshift.repo && \
+        PIN="-$(cat /mnt/rpms/version.txt)" ; \
+    elif [ -n "${RELEASE_TAG}" ]; then \
         curl -fsSL --retry 5 -o /tmp/rpms.tgz \
           "https://github.com/microshift-io/microshift/releases/download/${RELEASE_TAG}/microshift-rpms-${ARCH}.tgz" && \
         echo "${TARBALL_SHA256}  /tmp/rpms.tgz" | sha256sum -c && \
@@ -56,6 +78,15 @@ RUN ARCH=$(uname -m) && \
         dnf install -y "microshift-olm${PIN}" "microshift-olm-release-info${PIN}" ; \
     fi && \
     rpm -q microshift-release-info | grep -F "$(echo "${OKD_VERSION}" | tr '-' '_')-" && \
+    case "${OCP_VERSION}" in \
+      5.*) \
+        test "$(rpm -q --qf '%{VERSION}' microshift | cut -d. -f1,2)" = "${OCP_VERSION}" && \
+        test "$(rpm -q --qf '%{VERSION}' cri-o | cut -d. -f1,2)" = "${OCP_VERSION}" ;; \
+      *) true ;; \
+    esac && \
+    if [ "${LOCAL_RPMS}" = "1" ]; then \
+        mkdir -p /usr/share/oinc && cp /mnt/rpms/oinc-release.json /usr/share/oinc/release.json ; \
+    fi && \
     rm -rf /tmp/rpms /tmp/rpms.tgz \
            /etc/yum.repos.d/microshift.repo \
            /etc/yum.repos.d/openshift-deps.repo && \

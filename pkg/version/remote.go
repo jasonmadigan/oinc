@@ -146,13 +146,14 @@ func versionsFromTags(tags []string) []OCPVersion {
 	for _, tag := range tags {
 		for _, arch := range []string{"amd64", "arm64"} {
 			okd, ok := strings.CutSuffix(tag, "-"+arch)
-			if !ok || !okdTagPattern.MatchString(okd) {
+			if !ok {
 				continue
 			}
-			v, err := Resolve(okd)
-			if err != nil || orderVersion(okd) == nil {
+			v, err := resolvePublishedTag(okd)
+			if err != nil || orderVersion(v.MicroShiftTag) == nil {
 				continue
 			}
+			okd = v.MicroShiftTag
 			v.Arches = byTag[okd].Arches
 			if !slices.Contains(v.Arches, arch) {
 				v.Arches = append(v.Arches, arch)
@@ -169,6 +170,29 @@ func versionsFromTags(tags []string) []OCPVersion {
 		return orderVersion(versions[j].MicroShiftTag).LessThan(orderVersion(versions[i].MicroShiftTag))
 	})
 	return versions
+}
+
+// A replacement build has its own tag so cached, superseded images cannot be
+// mistaken for the corrected build. Only count architectures actually published
+// under that tag; the original tag remains recognisable for existing clusters.
+func resolvePublishedTag(tag string) (OCPVersion, error) {
+	for _, v := range catalogue {
+		if tag == v.imageTag() {
+			v.Version = v.MicroShiftTag
+			return v, nil
+		}
+	}
+	if !okdTagPattern.MatchString(tag) {
+		return OCPVersion{}, fmt.Errorf("unrecognised published image tag %s", tag)
+	}
+	v, err := Resolve(tag)
+	if err != nil {
+		return OCPVersion{}, err
+	}
+	if v.ImageTag != "" {
+		return OCPVersion{}, fmt.Errorf("image tag %s was superseded by %s", tag, v.ImageTag)
+	}
+	return v, nil
 }
 
 // Treat numbered stable builds as later than ec/rc, retaining numeric ordering

@@ -15,7 +15,7 @@ on:
         description: "Exact COPR RPM version-release for the optional OKD build"
         type: string
       deps_version:
-        description: "OpenShift dependency minor for the optional COPR build (e.g. 5.1)"
+        description: "OpenShift dependency minor for the optional COPR build"
         type: string
 
 concurrency:
@@ -31,7 +31,8 @@ jobs:
       fail-fast: false
       matrix:
         # each version sets release_tag + per-arch tarball_sha256 (github release tarball)
-        # or copr_pin (pinned copr VR). deps_version overrides the openshift-deps
+        # or copr_pin (pinned copr VR), or source_lock + image_tag.
+        # deps_version overrides the openshift-deps
         # mirror directory when the rpm needs a cri-o from a different release
         include:
           - version: "4.20"
@@ -63,14 +64,145 @@ jobs:
             copr_pin: "5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9"
             arch: arm64
           - version: "5.0"
-            okd_version: "5.0.0-okd-scos.ec.8"
-            copr_pin: "5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9"
-            deps_version: "5.1"
+            okd_version: "5.0.0-okd-scos.0"
+            source_lock: "images/5.0.json"
+            image_tag: "5.0.0-okd-scos.0-oinc.1"
+            deps_version: "5.0"
             arch: amd64
           - version: "5.0"
-            okd_version: "5.0.0-okd-scos.ec.8"
-            copr_pin: "5.1.0_202609020534_gb19f04dec_5.0.0_okd_scos.ec.8-1.el9"
-            deps_version: "5.1"
+            okd_version: "5.0.0-okd-scos.0"
+            source_lock: "images/5.0.json"
+            image_tag: "5.0.0-okd-scos.0-oinc.1"
+            deps_version: "5.0"
+            arch: arm64
+
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check version filter
+        if: inputs.version != '' && inputs.version != 'all' && inputs.version != matrix.version
+        run: echo "SKIP=true" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        if: env.SKIP != 'true'
+        uses: actions/checkout@v5
+
+      - name: Install podman
+        if: env.SKIP != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build release-aligned RPMs
+        if: env.SKIP != 'true' && matrix.source_lock != ''
+        env:
+          SOURCE_LOCK: ${{ matrix.source_lock }}
+          OVERRIDE_OKD: ${{ inputs.okd_version }}
+          OVERRIDE_COPR: ${{ inputs.copr_pin }}
+          OVERRIDE_DEPS: ${{ inputs.deps_version }}
+        run: |
+          if [[ -n "$OVERRIDE_OKD$OVERRIDE_COPR$OVERRIDE_DEPS" ]]; then
+            echo "This version uses a source lock; update the lock instead of substituting COPR RPMs" >&2
+            exit 1
+          fi
+          sudo python3 images/build-rpms.py "$SOURCE_LOCK" --runtime podman --output images/rpms
+        timeout-minutes: 60
+
+      - name: Build image
+        if: env.SKIP != 'true'
+        env:
+          SELECTED_VERSION: ${{ inputs.version }}
+          OVERRIDE_OKD: ${{ inputs.okd_version }}
+          OVERRIDE_COPR: ${{ inputs.copr_pin }}
+          OVERRIDE_DEPS: ${{ inputs.deps_version }}
+          OCP_VERSION: ${{ matrix.version }}
+          OKD_VERSION: ${{ matrix.okd_version }}
+          DEPS_VERSION: ${{ matrix.deps_version }}
+          RELEASE_TAG: ${{ matrix.release_tag }}
+          TARBALL_SHA256: ${{ matrix.tarball_sha256 }}
+          COPR_PIN: ${{ matrix.copr_pin }}
+          SOURCE_LOCK: ${{ matrix.source_lock }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          if [[ -n "$OVERRIDE_OKD$OVERRIDE_COPR$OVERRIDE_DEPS" ]]; then
+            if [[ -z "$SELECTED_VERSION" || "$SELECTED_VERSION" == "all" || -z "$OVERRIDE_OKD" || -z "$OVERRIDE_COPR" || -z "$OVERRIDE_DEPS" ]]; then
+              echo "Custom builds require version, okd_version, copr_pin and deps_version" >&2
+              exit 1
+            fi
+            if [[ ! "$OVERRIDE_OKD" =~ ^[0-9]+\.[0-9]+\.[0-9]+-okd-scos\.((ec|rc)\.)?[0-9]+$ ]] ||
+               [[ "$OVERRIDE_OKD" != "$OCP_VERSION."* ]] ||
+               [[ ! "$OVERRIDE_DEPS" =~ ^[0-9]+\.[0-9]+$ ]] ||
+               [[ ! "$OVERRIDE_COPR" =~ ^[a-zA-Z0-9._+-]+$ ]]; then
+              echo "Invalid custom build: check the OKD tag, matching minor, COPR pin and dependency minor" >&2
+              exit 1
+            fi
+            OKD_VERSION="$OVERRIDE_OKD"
+            COPR_PIN="$OVERRIDE_COPR"
+            DEPS_VERSION="$OVERRIDE_DEPS"
+            RELEASE_TAG=""
+            TARBALL_SHA256=""
+          fi
+          LOCAL_RPMS=0
+          if [[ -n "$SOURCE_LOCK" ]]; then
+            LOCAL_RPMS=1
+            python3 - "$SOURCE_LOCK" "$OKD_VERSION" "$OCP_VERSION" "$IMAGE_TAG" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as source:
+              lock = json.load(source)
+          assert lock["okd_version"] == sys.argv[2]
+          assert lock["microshift_minor"] == lock["crio_minor"] == sys.argv[3]
+          assert lock["image_tag"] == sys.argv[4]
+          PY
+          fi
+          IMAGE_REF="$IMAGE_NAME:${IMAGE_TAG:-$OKD_VERSION}-$BUILD_ARCH"
+          sudo podman build \
+            --build-arg OCP_VERSION="$OCP_VERSION" \
+            --build-arg OKD_VERSION="$OKD_VERSION" \
+            --build-arg DEPS_VERSION="$DEPS_VERSION" \
+            --build-arg RELEASE_TAG="$RELEASE_TAG" \
+            --build-arg TARBALL_SHA256="$TARBALL_SHA256" \
+            --build-arg COPR_PIN="$COPR_PIN" \
+            --build-arg LOCAL_RPMS="$LOCAL_RPMS" \
+            --build-arg WITH_OLM=1 \
+            -t "$IMAGE_REF" \
+            -f images/Containerfile images/
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+        timeout-minutes: 30
+
+      - name: Login to GHCR
+        if: env.SKIP != 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push image
+        if: env.SKIP != 'true'
+        run: |
+          for attempt in 1 2 3; do
+            if sudo podman push "$IMAGE_REF"; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed, retrying in 10s..."
+            sleep 10
+          done
+          exit 1
+
+  # native console images for architectures upstream does not publish. bridge
+  # is rebuilt from the pinned upstream image's commit; custom okd builds reuse
+  # the catalogue console, so they skip this job
+  console:
+    if: inputs.okd_version == '' && inputs.copr_pin == '' && inputs.deps_version == ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "5.0"
+            okd_version: "5.0.0-okd-scos.0"
+            console_image: "quay.io/okd/scos-content@sha256:947e41d0b4af41f65107639d7ed9c49aacd5162b59cc2b79d48ad1d37ad701bf"
+            console_commit: "e15ec744673924852b341bb517d605c6c6989413"
             arch: arm64
 
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
@@ -96,49 +228,25 @@ jobs:
       - name: Build image
         if: env.SKIP != 'true'
         env:
-          SELECTED_VERSION: ${{ inputs.version }}
-          OVERRIDE_OKD: ${{ inputs.okd_version }}
-          OVERRIDE_COPR: ${{ inputs.copr_pin }}
-          OVERRIDE_DEPS: ${{ inputs.deps_version }}
-          OCP_VERSION: ${{ matrix.version }}
           OKD_VERSION: ${{ matrix.okd_version }}
-          DEPS_VERSION: ${{ matrix.deps_version }}
-          RELEASE_TAG: ${{ matrix.release_tag }}
-          TARBALL_SHA256: ${{ matrix.tarball_sha256 }}
-          COPR_PIN: ${{ matrix.copr_pin }}
+          CONSOLE_IMAGE: ${{ matrix.console_image }}
+          CONSOLE_COMMIT: ${{ matrix.console_commit }}
           BUILD_ARCH: ${{ matrix.arch }}
         run: |
-          if [[ -n "$OVERRIDE_OKD$OVERRIDE_COPR$OVERRIDE_DEPS" ]]; then
-            if [[ -z "$SELECTED_VERSION" || "$SELECTED_VERSION" == "all" || -z "$OVERRIDE_OKD" || -z "$OVERRIDE_COPR" || -z "$OVERRIDE_DEPS" ]]; then
-              echo "Custom builds require version, okd_version, copr_pin and deps_version" >&2
-              exit 1
-            fi
-            if [[ ! "$OVERRIDE_OKD" =~ ^[0-9]+\.[0-9]+\.[0-9]+-okd-scos\.((ec|rc)\.)?[0-9]+$ ]] ||
-               [[ "$OVERRIDE_OKD" != "$OCP_VERSION."* ]] ||
-               [[ ! "$OVERRIDE_DEPS" =~ ^[0-9]+\.[0-9]+$ ]] ||
-               [[ ! "$OVERRIDE_COPR" =~ ^[a-zA-Z0-9._+-]+$ ]]; then
-              echo "Invalid custom build: check the OKD tag, matching minor, COPR pin and dependency minor" >&2
-              exit 1
-            fi
-            OKD_VERSION="$OVERRIDE_OKD"
-            COPR_PIN="$OVERRIDE_COPR"
-            DEPS_VERSION="$OVERRIDE_DEPS"
-            RELEASE_TAG=""
-            TARBALL_SHA256=""
-          fi
-          IMAGE_REF="$IMAGE_NAME:$OKD_VERSION-$BUILD_ARCH"
+          IMAGE_REF="$IMAGE_NAME-console:$OKD_VERSION-$BUILD_ARCH"
           sudo podman build \
-            --build-arg OCP_VERSION="$OCP_VERSION" \
-            --build-arg OKD_VERSION="$OKD_VERSION" \
-            --build-arg DEPS_VERSION="$DEPS_VERSION" \
-            --build-arg RELEASE_TAG="$RELEASE_TAG" \
-            --build-arg TARBALL_SHA256="$TARBALL_SHA256" \
-            --build-arg COPR_PIN="$COPR_PIN" \
-            --build-arg WITH_OLM=1 \
+            --build-arg CONSOLE_IMAGE="$CONSOLE_IMAGE" \
+            --build-arg CONSOLE_COMMIT="$CONSOLE_COMMIT" \
             -t "$IMAGE_REF" \
-            -f images/Containerfile images/
+            -f images/Containerfile.console images/
+          # the final stage has no RUN, so a wrong-arch base would not fail the build
+          BUILT_ARCH=$(sudo podman image inspect --format '{{.Architecture}}' "$IMAGE_REF")
+          if [[ "$BUILT_ARCH" != "$BUILD_ARCH" ]]; then
+            echo "Built a $BUILT_ARCH image, expected $BUILD_ARCH" >&2
+            exit 1
+          fi
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
-        timeout-minutes: 15
+        timeout-minutes: 30
 
       - name: Login to GHCR
         if: env.SKIP != 'true'
