@@ -132,7 +132,7 @@ With the local images removed, a default `oinc create` on this host pulled both 
 
 The replacement uses the inputs in `images/5.0.json`: MicroShift `07ab806795491479323b6084c4375770e3c98266` (5.0 rc2 source, Kubernetes 1.36.3), pinned microshift-io packaging, the OKD 5.0 payloads by digest and CRI-O from the 5.0 mirror. Both architectures use the same source and build timestamp. The old COPR build is not an input. This remains community MicroShift with kindnet, and is not an official Red Hat GA binary or full OCP.
 
-The image revision is `5.0.0-okd-scos.0-oinc.1-<arch>`. Original tags remain historical artifacts; the new CLI excludes them from channel discovery. Replacement publication and native amd64 e2e verification are required before merge. A remote catalogue check on 29 September 2026 still found no replacement images.
+The image revision is `5.0.0-okd-scos.0-oinc.1-<arch>`. Original tags remain historical artifacts; the new CLI excludes them from channel discovery. Both replacement architectures were published on 29 September 2026 in [build 36587185381](https://github.com/jasonmadigan/oinc/actions/runs/36587185381). Native amd64 Docker and Podman smoke tests then passed in [E2E run 36586769472](https://github.com/jasonmadigan/oinc/actions/runs/36586769472).
 
 Verified locally on 28 September 2026 on native arm64 through Docker/OrbStack, using the tracked source builder and an unmodified `oinc create --version 5.0`:
 
@@ -191,6 +191,6 @@ This manual prototype does not register a cluster with oinc, configure the Conso
 
 ## Integration direction
 
-Keep the container runtime model. OKD remains the default for CI without a Red Hat pull secret. An eventual Red Hat selection needs separate image tags and release channels, validation and runtime mounting of the pull secret, and the matching OCP Console digest. No Red Hat distribution flag or published RC images are available through the CLI yet. `@latest` remains restricted to stable OKD releases, with prereleases explicitly selected through `@next`.
+Keep the container runtime model. OKD remains the default for CI without a Red Hat pull secret. An eventual Red Hat selection needs separate image tags and release channels, validation and runtime mounting of the pull secret, and the matching OCP Console digest. The historical 5.0 RCs remain outside the CLI. The separate [4.23 preview](ocp-4.23.md) adds an explicit `ocp-4.23` selector and stored pull-secret support. `@latest` remains restricted to stable OKD releases, with prereleases explicitly selected through `@next`.
 
 Full OCP has additional operators and installation requirements. Switching MicroShift's RPM source does not install them. The exact OCP Console can run beside the MicroShift container, but that combination should also be identified accurately.

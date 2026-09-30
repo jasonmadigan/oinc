@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jasonmadigan/oinc/pkg/kubeconfig"
+	"github.com/jasonmadigan/oinc/pkg/pullsecret"
 	"github.com/jasonmadigan/oinc/pkg/runtime"
 	"github.com/jasonmadigan/oinc/pkg/version"
 
@@ -251,7 +252,17 @@ func createBearerToken(client kubernetes.Interface) (string, error) {
 }
 
 func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token string, consolePort int, consolePlugin string, proxyOptions *consoleProxyOptions) error {
-	// remove old console container if present
+	image, platform := ver.ConsoleImageRef()
+	if ver.RequiresPullSecret {
+		path, err := pullsecret.RequiredPath()
+		if err != nil {
+			return err
+		}
+		if err := rt.PullImageWithAuth(image, platform, path); err != nil {
+			return err
+		}
+	}
+	// Keep the existing Console until its replacement image is available.
 	_ = rt.RemoveContainer(consoleContainer)
 
 	apiEndpoint := fmt.Sprintf("https://%s:6443", rt.ContainerHostAddress())
@@ -281,7 +292,9 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		}
 	}
 
-	image, platform := ver.ConsoleImageRef()
+	if ver.RequiresPullSecret {
+		env["BRIDGE_BRANDING"] = "ocp"
+	}
 	opts := runtime.ContainerOpts{
 		Name:     consoleContainer,
 		Image:    image,

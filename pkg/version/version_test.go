@@ -136,3 +136,35 @@ func TestConsoleImageFor(t *testing.T) {
 		}
 	}
 }
+
+func TestRedHatPreviewIsExplicitAndExcludedFromOKDChannels(t *testing.T) {
+	for _, selector := range []string{"ocp-4.23", "ocp-4.23.0-ec.1"} {
+		v, err := Resolve(selector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !v.RequiresPullSecret || !v.IsPrerelease() || v.ImageTag != "ocp-4.23.0-ec.1" {
+			t.Fatalf("wrong preview: %+v", v)
+		}
+		if found, ok := ResolveFromImage(v.MicroShiftImage()); !ok || found.Version != "ocp-4.23" {
+			t.Fatalf("unrecognised preview: %+v", found)
+		}
+		for _, arch := range []string{"amd64", "arm64"} {
+			image, platform := v.consoleImageFor(arch)
+			if image == "" || platform != "linux/"+arch {
+				t.Fatalf("wrong console for %s", arch)
+			}
+		}
+	}
+	for _, selector := range []string{"4.23", "4.23.0-ec.1", "4.23.0-okd-scos.0"} {
+		if _, err := Resolve(selector); err == nil {
+			t.Fatalf("ambiguous selector accepted: %s", selector)
+		}
+	}
+	if Default().Version != "5.0" {
+		t.Fatal("preview changed default")
+	}
+	if got := versionsFromTags([]string{"ocp-4.23.0-ec.1-arm64"}); len(got) != 0 {
+		t.Fatal("Red Hat preview leaked into OKD discovery")
+	}
+}

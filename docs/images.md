@@ -10,6 +10,8 @@ Native Console builds are published at `ghcr.io/jasonmadigan/oinc-console` with 
 
 For the separate, manually built Red Hat MicroShift rc0/rc1 container experiment, see [OCP release candidates](ocp-release-candidates.md). It uses kindnet and a runtime pull secret; it is not part of the OKD publishing workflow or CLI selectors.
 
+The Red Hat MicroShift 4.23 preview uses `images/Containerfile.ocp` and the image workflow’s `ocp-preview` job. Its `ocp-4.23.0-ec.1-<arch>` tags require a pull secret at runtime. See [4.23 preview](ocp-4.23.md).
+
 ## RPM sources
 
 Each version in the workflow matrix picks exactly one source:

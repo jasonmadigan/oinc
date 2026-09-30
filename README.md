@@ -40,7 +40,7 @@ All entries use **OKD MicroShift** builds. The OCP minor identifies the matching
 
 The 5.0 image builds MicroShift from a pinned `release-5.0` commit (the upstream rc2 source), with Kubernetes 1.36.3, CRI-O 5.0 RPMs and OKD 5.0 payload images. This is a community build, not a Red Hat MicroShift GA binary. Its `-oinc.1` image revision replaces the earlier 5.1-based experiment; the CLI excludes the superseded image from remote selection. See [release inputs](images/5.0.json) and [build details](docs/images.md#release-aligned-source-builds).
 
-Draft status, checked 29 September 2026: the replacement has been built and tested locally on arm64. Publication and native amd64 validation remain pending, so this branch's default create requires a locally built replacement image. The table lists catalogue targets, not completed validation of both replacement architectures.
+The 5.0 replacement images are published for amd64 and arm64. Native amd64 Docker/Podman smoke tests and local native ARM checks passed on 29 September 2026.
 
 Up to 4.22 the Console is the amd64-only `origin-console` image, emulated on ARM. 5.0's Console cannot run under that emulation, so ARM hosts get a native build of the same source. See [Console images](docs/images.md#console-images).
 
@@ -51,10 +51,12 @@ oinc version list --remote                  # published oinc images and architec
 oinc create --version 4@latest              # newest stable OKD build in supported 4.x minors
 oinc create --version @latest               # newest stable OKD build in any supported minor
 oinc create --version 5.0@next               # opt into 5.0 builds, including ec/rc
-oinc create --version 5.0.0-okd-scos.0        # exact payload (replacement image must be local or published)
+oinc create --version 5.0.0-okd-scos.0        # exact OKD payload
 ```
 
 `@latest` excludes all `ec` and `rc` tags, including those under 4.x. `@next` includes them. These selectors query oinc's GHCR images for the host architecture; new upstream RPMs must first be built into an oinc image. They resolve once at create/switch time and do not update an existing cluster. See [version management](docs/versions.md).
+
+The opt-in Red Hat MicroShift 4.23 preview is available as `oinc create --version ocp-4.23` after `oinc pull-secret set <path>`. It requires registry credentials and uses community networking. See [4.23 setup and build inputs](docs/ocp-4.23.md).
 
 Use `/add-version` in Claude Code to add a new version, or see [docs/images.md](docs/images.md) for the manual process.
 

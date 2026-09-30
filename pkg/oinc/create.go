@@ -10,6 +10,7 @@ import (
 	"github.com/jasonmadigan/oinc/pkg/addons"
 	"github.com/jasonmadigan/oinc/pkg/cluster"
 	"github.com/jasonmadigan/oinc/pkg/kubeconfig"
+	"github.com/jasonmadigan/oinc/pkg/pullsecret"
 	"github.com/jasonmadigan/oinc/pkg/runtime"
 	"github.com/jasonmadigan/oinc/pkg/tui"
 	"github.com/jasonmadigan/oinc/pkg/version"
@@ -83,7 +84,7 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 				return err
 			}
 			ver = v
-			return nil
+			return PreflightVersion(ver)
 		}},
 		&tui.Step{Name: "detecting runtime", Run: func() error {
 			r, err := runtime.Detect(opts.RuntimeOverride)
@@ -98,6 +99,9 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 		}},
 		&tui.Step{Name: "creating container", Run: func() error {
 			if rt.ContainerExists(containerName) {
+				if err := checkExistingVersion(rt, ver); err != nil {
+					return err
+				}
 				return rt.StartContainer(containerName)
 			}
 			copts := runtime.ContainerOpts{
@@ -113,6 +117,9 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 					{Host: opts.HTTPSPort, Container: 443},
 					{Host: 6443, Container: 6443},
 				},
+			}
+			if err := configurePullSecret(&copts, ver); err != nil {
+				return err
 			}
 			if err := rt.CreateContainer(copts); err != nil {
 				return err
@@ -184,6 +191,9 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
+	if err := PreflightVersion(ver); err != nil {
+		return err
+	}
 	logger.Info("resolved version", "version", ver.Version)
 
 	rt, err := runtime.Detect(opts.RuntimeOverride)
@@ -200,6 +210,9 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 	}
 
 	if rt.ContainerExists(containerName) {
+		if err := checkExistingVersion(rt, ver); err != nil {
+			return err
+		}
 		logger.Info("container already exists, starting")
 	} else {
 		logger.Info("creating container")
@@ -218,6 +231,9 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 			},
 		}
 
+		if err := configurePullSecret(&copts, ver); err != nil {
+			return err
+		}
 		if err := rt.CreateContainer(copts); err != nil {
 			return fmt.Errorf("creating container: %w", err)
 		}
@@ -398,4 +414,35 @@ func AddonInstallSteps(ctx context.Context, addonList string, kc []byte, rt *run
 	}
 
 	return steps, nil
+}
+
+func PreflightVersion(ver version.OCPVersion) error {
+	if !ver.RequiresPullSecret {
+		return nil
+	}
+	_, err := pullsecret.RequiredPath()
+	return err
+}
+
+func configurePullSecret(opts *runtime.ContainerOpts, ver version.OCPVersion) error {
+	if !ver.RequiresPullSecret {
+		return nil
+	}
+	path, err := pullsecret.RequiredPath()
+	if err != nil {
+		return err
+	}
+	opts.Volumes = append(opts.Volumes, path+":/etc/crio/openshift-pull-secret:ro")
+	return nil
+}
+
+func checkExistingVersion(rt *runtime.Runtime, ver version.OCPVersion) error {
+	info, err := rt.InspectContainer(containerName)
+	if err != nil {
+		return err
+	}
+	if info.Image != ver.MicroShiftImage() {
+		return fmt.Errorf("existing cluster uses %s; use oinc switch %s to recreate it", info.Image, ver.Version)
+	}
+	return nil
 }

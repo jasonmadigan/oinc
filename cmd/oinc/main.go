@@ -14,6 +14,7 @@ import (
 	"github.com/jasonmadigan/oinc/pkg/addons"
 	"github.com/jasonmadigan/oinc/pkg/kubeconfig"
 	"github.com/jasonmadigan/oinc/pkg/oinc"
+	"github.com/jasonmadigan/oinc/pkg/pullsecret"
 	"github.com/jasonmadigan/oinc/pkg/runtime"
 	"github.com/jasonmadigan/oinc/pkg/tui"
 	"github.com/jasonmadigan/oinc/pkg/version"
@@ -164,7 +165,7 @@ func main() {
 			}, logger)
 		},
 	}
-	createCmd.Flags().StringVar(&flagVersion, "version", "", "version: minor, full OKD tag, [major/minor]@latest (stable), or @next (prereleases); default: stable catalogue pin")
+	createCmd.Flags().StringVar(&flagVersion, "version", "", "version: OKD minor, full OKD tag, ocp-4.23, [major/minor]@latest (stable), or @next (prereleases); default: stable catalogue pin")
 	createCmd.Flags().IntVar(&flagHTTPPort, "http-port", 9080, "HTTP route port")
 	createCmd.Flags().IntVar(&flagHTTPSPort, "https-port", 9443, "HTTPS route port")
 	createCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
@@ -243,7 +244,7 @@ func main() {
 	var flagRemoteVersions bool
 	versionListCmd := &cobra.Command{
 		Use:   "list",
-		Short: "List OKD builds for supported OCP minors",
+		Short: "List supported OKD builds and Red Hat previews",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			versions := version.All()
 			if flagRemoteVersions {
@@ -259,6 +260,9 @@ func main() {
 				marker := ""
 				if v.IsPrerelease() {
 					marker = "  " + tui.Dim.Render("[pre-release]")
+				}
+				if v.RequiresPullSecret {
+					marker += "  " + tui.Dim.Render("[Red Hat pull secret required]")
 				}
 				if v.MicroShiftTag == def.MicroShiftTag {
 					marker = "  " + tui.Green.Render("[default]")
@@ -282,6 +286,9 @@ func main() {
 			logger := newLogger(flagLogLevel)
 			ver, err := version.ResolveContext(cmd.Context(), args[0])
 			if err != nil {
+				return err
+			}
+			if err := oinc.PreflightVersion(ver); err != nil {
 				return err
 			}
 			logger.Info("switching version", "version", ver.Version)
@@ -453,7 +460,45 @@ func main() {
 		},
 	}
 
-	root.AddCommand(createCmd, deleteCmd, statusCmd, versionCmd, switchCmd, consoleCmd, addonCmd, kubeconfigCmd, loadImageCmd)
+	pullSecretCmd := &cobra.Command{
+		Use:   "pull-secret",
+		Short: "Manage Red Hat pull secret",
+	}
+	pullSecretSetCmd := &cobra.Command{
+		Use:   "set <path>",
+		Short: "Store a pull secret for authenticated registries",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := pullsecret.Save(args[0]); err != nil {
+				return err
+			}
+			p, _ := pullsecret.Path()
+			fmt.Printf("pull secret saved to %s\n", p)
+			return nil
+		},
+	}
+	pullSecretRemoveCmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove the stored pull secret",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return pullsecret.Remove()
+		},
+	}
+	pullSecretStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Check if a pull secret is configured",
+		Run: func(cmd *cobra.Command, args []string) {
+			if pullsecret.Exists() {
+				p, _ := pullsecret.Path()
+				fmt.Printf("pull secret configured: %s\n", p)
+			} else {
+				fmt.Printf("no pull secret configured\nget one from: %s\n", pullsecret.PullSecretURL)
+			}
+		},
+	}
+	pullSecretCmd.AddCommand(pullSecretSetCmd, pullSecretRemoveCmd, pullSecretStatusCmd)
+
+	root.AddCommand(createCmd, deleteCmd, statusCmd, versionCmd, switchCmd, consoleCmd, addonCmd, kubeconfigCmd, loadImageCmd, pullSecretCmd)
 
 	// suppress usage on RunE errors -- the TUI already shows what went wrong
 	root.SilenceUsage = true
@@ -496,6 +541,9 @@ func runVersionPicker() (string, error) {
 	var items []tui.VersionItem
 	for _, v := range all {
 		hint := "microshift: " + v.MicroShiftTag
+		if v.RequiresPullSecret {
+			hint += " (Red Hat pull secret required)"
+		}
 		if v.IsPrerelease() {
 			hint += " (pre-release)"
 		}

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/jasonmadigan/oinc/pkg/addons"
+	"github.com/jasonmadigan/oinc/pkg/runtime"
+	"github.com/jasonmadigan/oinc/pkg/version"
 )
 
 // configureRHDH applies rhdh options for a test and resets them on cleanup so
@@ -116,5 +118,42 @@ func TestCreatePlainAddonPreflight(t *testing.T) {
 	err := createPlain(context.Background(), CreateOpts{Addons: "nosuch"}, logger)
 	if err == nil || !strings.Contains(err.Error(), "unknown addon") {
 		t.Errorf("createPlain err = %v, want unknown addon", err)
+	}
+}
+
+func TestPreviewMissingSecretFailsBeforeRuntime(t *testing.T) {
+	t.Setenv("OINC_CONFIG_DIR", t.TempDir())
+	opts := CreateOpts{Version: "ocp-4.23", RuntimeOverride: "not-a-runtime"}
+	_, steps := CreateSteps(context.Background(), opts)
+	if err := steps[0].Run(); err == nil || !strings.Contains(err.Error(), "pull-secret set") {
+		t.Fatalf("TUI preflight = %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(devNull{}, nil))
+	if err := createPlain(context.Background(), opts, logger); err == nil || !strings.Contains(err.Error(), "pull-secret set") {
+		t.Fatalf("plain preflight = %v", err)
+	}
+}
+
+func TestPreviewMountsPullSecretReadOnlyAndOKDDoesNot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OINC_CONFIG_DIR", dir)
+	if err := os.WriteFile(filepath.Join(dir, "pull-secret.json"), []byte(`{"auths":{"quay.io":{"auth":"dummy"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, selector := range []string{"5.0", "ocp-4.23"} {
+		ver, err := version.Resolve(selector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts := runtime.ContainerOpts{}
+		if err := configurePullSecret(&opts, ver); err != nil {
+			t.Fatal(err)
+		}
+		if selector == "5.0" && len(opts.Volumes) != 0 {
+			t.Fatal("OKD received stored Red Hat credentials")
+		}
+		if selector == "ocp-4.23" && (len(opts.Volumes) != 1 || opts.Volumes[0] != filepath.Join(dir, "pull-secret.json")+":/etc/crio/openshift-pull-secret:ro") {
+			t.Fatalf("wrong auth mount: %v", opts.Volumes)
+		}
 	}
 }
