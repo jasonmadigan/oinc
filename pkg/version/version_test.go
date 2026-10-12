@@ -1,6 +1,7 @@
 package version
 
 import (
+	"regexp"
 	"testing"
 )
 
@@ -87,7 +88,7 @@ func TestFullTagCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.ConsoleTag != "5.0" || v.APIBranch != "release-5.0" || v.MicroShiftTag != v.Version {
+	if v.Minor != "5.0" || v.APIBranch != "release-5.0" || v.MicroShiftTag != v.Version {
 		t.Fatalf("wrong compatibility settings: %+v", v)
 	}
 	if want := ImageRegistry + ":5.0.0-okd-scos.rc.1-" + v.Arch(); v.MicroShiftImage() != want {
@@ -112,13 +113,17 @@ func TestReplacementImage(t *testing.T) {
 }
 
 func TestConsoleImageFor(t *testing.T) {
-	legacy, err := Resolve("4.22")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, arch := range []string{"amd64", "arm64"} {
-		if image, platform := legacy.consoleImageFor(arch); image != ConsoleImage+":4.22" || platform != "linux/amd64" {
-			t.Errorf("4.22 on %s: %s (%s), want origin-console on linux/amd64", arch, image, platform)
+	// the 4.22 payload console is amd64-only, and newer 4.22 builds reuse it
+	payload := "quay.io/okd/scos-content@sha256:923f8700184642c1ddf2ba8a27f33c76d35930a463c76ee47e0fff335574c728"
+	for _, selector := range []string{"4.22", "4.22.0-okd-scos.ec.17"} {
+		v, err := Resolve(selector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, arch := range []string{"amd64", "arm64"} {
+			if image, platform := v.consoleImageFor(arch); image != payload || platform != "linux/amd64" {
+				t.Errorf("%s on %s: %s (%s), want %s (linux/amd64)", selector, arch, image, platform, payload)
+			}
 		}
 	}
 	// newer 5.0 builds reuse the minor's console
@@ -133,6 +138,17 @@ func TestConsoleImageFor(t *testing.T) {
 	} {
 		if image, platform := v.consoleImageFor(tt.arch); image != tt.image || platform != tt.platform {
 			t.Errorf("5.0 on %s: %s (%s), want %s (%s)", tt.arch, image, platform, tt.image, tt.platform)
+		}
+	}
+}
+
+// a moving tag leaves each host on whatever build it cached, so the amd64
+// console, which also serves arches without their own, must name a digest
+func TestConsolesPinnedByDigest(t *testing.T) {
+	digest := regexp.MustCompile(`^[^@]+@sha256:[0-9a-f]{64}$`)
+	for _, v := range All() {
+		if image, _ := v.consoleImageFor("amd64"); !digest.MatchString(image) {
+			t.Errorf("%s console %q is not pinned by digest", v.Version, image)
 		}
 	}
 }

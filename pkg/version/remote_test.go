@@ -40,7 +40,7 @@ func TestPublished(t *testing.T) {
 	var tags []string
 	for _, v := range got {
 		tags = append(tags, v.Version)
-		if v.ConsoleTag != "5.0" || v.APIBranch != "release-5.0" {
+		if v.Minor != "5.0" || v.APIBranch != "release-5.0" {
 			t.Errorf("wrong compatibility settings: %+v", v)
 		}
 	}

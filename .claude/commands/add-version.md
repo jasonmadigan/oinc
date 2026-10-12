@@ -39,7 +39,7 @@ For each OKD candidate, choose exactly one RPM source:
 
 Derive `deps_version` from actual RPM requirements, especially CRI-O, and verify the dependency mirror for each architecture. For a release-aligned build, require the source/base and CRI-O RPM minors to match the target; choose compatible source rather than moving the dependency mirror to accommodate mainline RPMs. Record `crio --version` separately from its RPM version: their numbering differs, and upstream patch skew within one Kubernetes minor is distinct from release-minor skew. Base images and dependency mirrors remain mutable unless separately pinned.
 
-Check the `openshift/api` branch and Console image as well. A release announcement, successful manifest lookup or existing local image is not proof that the complete oinc image can be built, published and booted.
+Check the `openshift/api` branch as well. Pin the matching payload's Console by digest (`oc adm release info --image-for=console`); `origin-console` tags move and need not be release builds. A release announcement, successful manifest lookup or existing local image is not proof that the complete oinc image can be built, published and booted.
 
 Present a table with distribution, exact tag, RPM source/pin, dependency minor, architectures, Console reference and publication/test status. For a named update, proceed within the user's existing authorization. For discovery without a selected target, present the evidence before asking which candidates to update.
 

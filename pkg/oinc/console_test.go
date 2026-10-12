@@ -334,8 +334,8 @@ func TestBuildConsoleProxyOptionsClearsRemovedProxies(t *testing.T) {
 	}
 }
 
-// The launch must use the catalogue's image and platform: origin-console
-// minors request amd64 even on ARM hosts, while 5.0 runs natively.
+// The launch must use the catalogue's image and platform: 4.x payload
+// consoles request amd64 even on ARM hosts, while 5.0 runs natively.
 func TestStartConsoleRequestsCatalogueImage(t *testing.T) {
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "docker")
@@ -367,8 +367,8 @@ esac
 			t.Fatal(err)
 		}
 		image, platform := ver.ConsoleImageRef()
-		if selector == "4.22" && (image != version.ConsoleImage+":4.22" || platform != "linux/amd64") {
-			t.Fatalf("4.22 console = %s (%s), want origin-console on linux/amd64", image, platform)
+		if selector == "4.22" && (!strings.Contains(image, "@sha256:") || platform != "linux/amd64") {
+			t.Fatalf("4.22 console = %s (%s), want the payload digest on linux/amd64", image, platform)
 		}
 		if !strings.Contains(string(args), "--platform\n"+platform+"\n") || !strings.HasSuffix(string(args), "\n"+image+"\n") {
 			t.Fatalf("%s console launch did not request %s on %s: %s", selector, image, platform, args)

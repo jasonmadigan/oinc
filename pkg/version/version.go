@@ -12,8 +12,8 @@ type OCPVersion struct {
 	Version            string            // minor version or full OKD tag
 	MicroShiftTag      string            // "4.18.0-okd-scos.9" (arch appended at runtime)
 	ImageTag           string            // optional OINC build revision for the same payload
-	ConsoleTag         string            // "4.18"
-	ConsoleImages      map[string]string // per-arch console refs, replacing origin-console:ConsoleTag
+	Minor              string            // "4.18"
+	ConsoleImages      map[string]string // per-arch console refs; amd64, pinned by digest, is the fallback
 	APIBranch          string            // "release-4.18"
 	Arches             []string          // supported architectures
 }
@@ -22,29 +22,41 @@ var catalogue = []OCPVersion{
 	{
 		Version:       "4.20",
 		MicroShiftTag: "4.20.0-okd-scos.16",
-		ConsoleTag:    "4.20",
-		APIBranch:     "release-4.20",
-		Arches:        []string{"amd64", "arm64"},
+		Minor:         "4.20",
+		// console from the 4.20.0-okd-scos.16 payload
+		ConsoleImages: map[string]string{
+			"amd64": "quay.io/okd/scos-content@sha256:23f8ab55c9a2d6fb923e6f2a11a248ec963da0241c70ae29ad52adbaf8395f68",
+		},
+		APIBranch: "release-4.20",
+		Arches:    []string{"amd64", "arm64"},
 	},
 	{
 		Version:       "4.21",
 		MicroShiftTag: "4.21.0-okd-scos.ec.15",
-		ConsoleTag:    "4.21",
-		APIBranch:     "release-4.21",
-		Arches:        []string{"amd64", "arm64"},
+		Minor:         "4.21",
+		// console from the 4.21.0-okd-scos.ec.15 payload
+		ConsoleImages: map[string]string{
+			"amd64": "quay.io/okd/scos-content@sha256:7b386635665149fd0ef56e1825d93dd92ba2fe5e659a5438d93837e201c5a345",
+		},
+		APIBranch: "release-4.21",
+		Arches:    []string{"amd64", "arm64"},
 	},
 	{
 		Version:       "4.22",
 		MicroShiftTag: "4.22.0-okd-scos.ec.16",
-		ConsoleTag:    "4.22",
-		APIBranch:     "release-4.22",
-		Arches:        []string{"amd64", "arm64"},
+		Minor:         "4.22",
+		// console from the 4.22.0-okd-scos.ec.16 payload
+		ConsoleImages: map[string]string{
+			"amd64": "quay.io/okd/scos-content@sha256:923f8700184642c1ddf2ba8a27f33c76d35930a463c76ee47e0fff335574c728",
+		},
+		APIBranch: "release-4.22",
+		Arches:    []string{"amd64", "arm64"},
 	},
 	{
 		Version:       "5.0",
 		MicroShiftTag: "5.0.0-okd-scos.0",
 		ImageTag:      "5.0.0-okd-scos.0-oinc.1",
-		ConsoleTag:    "5.0",
+		Minor:         "5.0",
 		// console from the 5.0.0-okd-scos.0 payload, plus a native arm64 rebuild
 		// of the same commit (images/Containerfile.console)
 		ConsoleImages: map[string]string{
@@ -61,7 +73,7 @@ var redHatCatalogue = []OCPVersion{
 		Version:       "ocp-4.23",
 		MicroShiftTag: "4.23.0-ec.1",
 		ImageTag:      "ocp-4.23.0-ec.1",
-		ConsoleTag:    "4.23",
+		Minor:         "4.23",
 		ConsoleImages: map[string]string{
 			"amd64": "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:f116792bea2df6fdea9d26770e502ded47f616dad57c5283ed6307be11b70d79",
 			"arm64": "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:a4063e6079afc7f2e4ba8b166a7da27412cec39610b4883028415aac29fdde12",
@@ -128,7 +140,6 @@ func Resolve(v string) (OCPVersion, error) {
 const (
 	ImageRegistry   = "ghcr.io/jasonmadigan/oinc"
 	ConsoleRegistry = "ghcr.io/jasonmadigan/oinc-console"
-	ConsoleImage    = "quay.io/openshift/origin-console"
 )
 
 func (v OCPVersion) Arch() string {
@@ -165,13 +176,10 @@ func (v OCPVersion) ConsoleImageRef() (image, platform string) {
 	return v.consoleImageFor(runtime.GOARCH)
 }
 
-// origin-console only publishes amd64, which ARM hosts run emulated. From 5.0
-// the console base is CentOS Stream 10, whose glibc needs x86-64-v3 and fails
-// under that emulation, so those minors pin an image per architecture.
+// payload consoles from OKD are amd64-only, which ARM hosts run emulated. From
+// 5.0 the console base is CentOS Stream 10, whose glibc needs x86-64-v3 and
+// fails under that emulation, so those minors also pin a native arm64 image.
 func (v OCPVersion) consoleImageFor(arch string) (image, platform string) {
-	if v.ConsoleImages == nil {
-		return fmt.Sprintf("%s:%s", ConsoleImage, v.ConsoleTag), "linux/amd64"
-	}
 	if image, ok := v.ConsoleImages[arch]; ok {
 		return image, "linux/" + arch
 	}
