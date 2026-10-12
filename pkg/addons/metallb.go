@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jasonmadigan/oinc/pkg/download"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -88,7 +89,7 @@ func (m *metalLB) Install(ctx context.Context, cfg *Config) error {
 	url := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/v%s/config/manifests/metallb-native.yaml", v)
 
 	cfg.Logger.Info("fetching manifests", "url", url)
-	manifest, err := fetchURL(ctx, url)
+	manifest, err := download.URL(ctx, cfg.Logger, url)
 	if err != nil {
 		return err
 	}

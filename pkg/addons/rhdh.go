@@ -200,11 +200,16 @@ upstream:
 `, host, baseURL, plugins, image)
 }
 
+// pullArgs locates the backstage chart without adding a helm repo.
+func (r *rhdh) pullArgs() []string {
+	return append([]string{"--repo", rhdhChartRepoURL}, r.chartVersionArgs()...)
+}
+
 // helmArgs builds the chart install invocation. the user overlay must stay
 // the final --values: helm value files merge left to right and user-wins
 // semantics depend on that ordering.
-func (r *rhdh) helmArgs(baseValues string) []string {
-	args := []string{"upgrade", "--install", "rhdh", "rhdh/backstage",
+func (r *rhdh) helmArgs(chart, baseValues string) []string {
+	args := []string{"upgrade", "--install", "rhdh", chart,
 		"--create-namespace",
 		"-n", rhdhNamespace,
 		"--values", baseValues,
@@ -212,7 +217,6 @@ func (r *rhdh) helmArgs(baseValues string) []string {
 	if r.valuesFile != "" {
 		args = append(args, "--values", r.valuesFile)
 	}
-	args = append(args, r.chartVersionArgs()...)
 	return append(args, "--wait", "--timeout", "15m")
 }
 
@@ -245,19 +249,13 @@ func (r *rhdh) Install(ctx context.Context, cfg *Config) error {
 
 	cfg.Logger.Info("installing rhdh via helm", "version", r.resolveVersion(), "url", baseURL)
 
-	out, err := exec.CommandContext(ctx, "helm", "repo", "add", "rhdh",
-		rhdhChartRepoURL, "--force-update",
-	).CombinedOutput()
+	dir, chart, err := pullChart(ctx, cfg, "backstage", r.pullArgs()...)
 	if err != nil {
-		return fmt.Errorf("helm repo add: %s: %w", string(out), err)
+		return fmt.Errorf("pulling rhdh chart: %w", err)
 	}
+	defer os.RemoveAll(dir)
 
-	out, err = exec.CommandContext(ctx, "helm", "repo", "update", "rhdh").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("helm repo update: %s: %w", string(out), err)
-	}
-
-	out, err = exec.CommandContext(ctx, "helm", r.helmArgs(values.Name())...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "helm", r.helmArgs(chart, values.Name())...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("helm install rhdh: %s: %w", string(out), err)
 	}

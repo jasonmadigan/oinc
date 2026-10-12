@@ -20,7 +20,7 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 
 ### Upstream manifests (gateway-api, cert-manager, metallb)
 
-Downloaded via curl and applied via `kubectl apply --server-side --force-conflicts`. Curl is used instead of Go's `net/http` because Go's network stack breaks inside privileged containers on macOS.
+Downloaded via curl and applied via `kubectl apply --server-side --force-conflicts`. Curl is used instead of Go's `net/http` because Go's network stack breaks inside privileged containers on macOS. See [download retries](#download-retries).
 
 For gateway-api specifically, CRDs are applied via the dynamic k8s client directly (not kubectl) since it only needs to handle CRD resources.
 
@@ -44,10 +44,16 @@ There is therefore no verified surgical recovery for an MCP environment created 
 
 Uses `helm upgrade --install` for idempotency. Helm must be available in `$PATH`.
 
+Charts are downloaded first with `helm pull` into a temporary directory, then installed from the local archive, so a failed download can be retried (see [download retries](#download-retries)). Charts are located with `--repo`, so oinc does not add repositories to your Helm configuration.
+
 - **Istio**: installs the Sail operator from a GitHub release tarball, then creates an `Istio` CR in the `Ready` phase
-- **Kuadrant**: adds the `kuadrant.io` helm repo, installs the operator, then creates a `Kuadrant` CR and waits for it to become ready
-- **RHDH**: adds the `rhdh` helm repo and installs the `rhdh/backstage` chart into the `rhdh` namespace (see below)
+- **Kuadrant**: installs the operator chart from `https://kuadrant.io/helm-charts/`, then creates a `Kuadrant` CR and waits for it to become ready
+- **RHDH**: installs the `backstage` chart from the RHDH chart repository into the `rhdh` namespace (see below)
 - **MCP Gateway**: uses the OCI chart at `oci://ghcr.io/kuadrant/charts/mcp-gateway` for the instance in `mcp-gateway-system`; reuses Kuadrant's bundled controller and CRDs when available, otherwise installs the full chart. Creates a Gateway and ReferenceGrant in `gateway-system` as prerequisites.
+
+### Download retries
+
+Release hosts and registries fail for tens of seconds at a time with 5xx, 429 or reset connections. Every download oinc makes (addon manifests, Helm charts and the ConsolePlugin CRD) is retried three times, 2, 5 and 10 seconds apart, and each retry is logged with its cause. Curl runs with `--fail`, so an error page is never applied as a manifest. When the retries are spent, oinc fails with the last error.
 
 ## MCP Gateway
 
@@ -194,6 +200,7 @@ Dependencies are declared per-addon and resolved via topological sort (Kahn's al
    ```
 4. Register in `init()`: `func init() { Register(&myAddon{}) }`
 5. Add detection in `pkg/oinc/status.go` `addonChecks` for status display
+6. Download through `applyManifestURL`, `download.URL` or `pullChart` so the addon gets [download retries](#download-retries); never pass a URL straight to curl or helm
 
 ## MicroShift-specific notes
 

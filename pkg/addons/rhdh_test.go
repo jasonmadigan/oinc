@@ -298,7 +298,7 @@ func TestRHDHRenderValuesDisableQuickstart(t *testing.T) {
 // --values.
 func TestRHDHHelmArgsOverlayLast(t *testing.T) {
 	r := &rhdh{valuesFile: "/tmp/overlay.yaml"}
-	args := r.helmArgs("/tmp/base.yaml")
+	args := r.helmArgs("/tmp/backstage-6.2.2.tgz", "/tmp/base.yaml")
 
 	var values []string
 	for i, a := range args {
@@ -312,24 +312,23 @@ func TestRHDHHelmArgsOverlayLast(t *testing.T) {
 }
 
 func TestRHDHHelmArgsVersion(t *testing.T) {
-	args := (&rhdh{version: "6.2.2"}).helmArgs("/tmp/base.yaml")
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--version 6.2.2") {
-		t.Errorf("args = %v, want chart pin", args)
+	pull := strings.Join((&rhdh{version: "6.2.2"}).pullArgs(), " ")
+	if pull != "--repo "+rhdhChartRepoURL+" --version 6.2.2" {
+		t.Errorf("pull args = %q, want repo and chart pin", pull)
 	}
-	for _, want := range []string{"upgrade", "--install", "rhdh/backstage", "--wait"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("args = %v, missing %q", args, want)
-		}
+	if pull := strings.Join((&rhdh{version: "latest"}).pullArgs(), " "); strings.Contains(pull, "--version") {
+		t.Errorf("latest must not pin the chart: %v", pull)
 	}
 
-	if joined := strings.Join((&rhdh{version: "latest"}).helmArgs("/tmp/base.yaml"), " "); strings.Contains(joined, "--version") {
-		t.Errorf("latest must not pin the chart: %v", joined)
+	args := (&rhdh{version: "6.2.2"}).helmArgs("/tmp/backstage-6.2.2.tgz", "/tmp/base.yaml")
+	joined := strings.Join(args, " ")
+	if !strings.HasPrefix(joined, "upgrade --install rhdh /tmp/backstage-6.2.2.tgz ") || !strings.Contains(joined, "--wait") {
+		t.Errorf("args = %v, want install of the downloaded archive", args)
 	}
 
 	// no overlay: single --values
 	count := 0
-	for _, a := range (&rhdh{}).helmArgs("/tmp/base.yaml") {
+	for _, a := range (&rhdh{}).helmArgs("/tmp/backstage-6.2.2.tgz", "/tmp/base.yaml") {
 		if a == "--values" {
 			count++
 		}

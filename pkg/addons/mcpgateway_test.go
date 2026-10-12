@@ -267,11 +267,23 @@ func TestMCPGatewayInstallStandaloneAndDetectionErrors(t *testing.T) {
 		t.Run(fmt.Sprintf("failed ownership probe=%t", failedProbe), func(t *testing.T) {
 			bin := t.TempDir()
 			argsFile := filepath.Join(bin, "args")
-			if err := os.WriteFile(filepath.Join(bin, "helm"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MCP_TEST_ARGS\"\n"), 0o700); err != nil {
+			pullArgsFile := filepath.Join(bin, "pull-args")
+			script := `#!/bin/sh
+set -eu
+if [ "$1" = pull ]; then
+  printf '%s\n' "$@" > "$MCP_TEST_PULL_ARGS"
+  while [ "$1" != --destination ]; do shift; done
+  touch "$2/mcp-gateway-0.8.0.tgz"
+  exit 0
+fi
+printf '%s\n' "$@" > "$MCP_TEST_ARGS"
+`
+			if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("MCP_TEST_ARGS", argsFile)
+			t.Setenv("MCP_TEST_PULL_ARGS", pullArgsFile)
 			client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
 			if failedProbe {
 				client.PrependReactor("get", "customresourcedefinitions", func(k8stesting.Action) (bool, kruntime.Object, error) {
@@ -284,20 +296,33 @@ func TestMCPGatewayInstallStandaloneAndDetectionErrors(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "access denied") {
 					t.Fatalf("expected ownership probe error, got %v", err)
 				}
-				if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-					t.Fatal("must not fall back to Helm install after a failed ownership probe")
+				for _, f := range []string{pullArgsFile, argsFile} {
+					if _, err := os.Stat(f); !os.IsNotExist(err) {
+						t.Fatal("must not fall back to Helm install after a failed ownership probe")
+					}
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
+			pullArgs, err := os.ReadFile(pullArgsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pull := strings.Split(strings.TrimSpace(string(pullArgs)), "\n")
+			if len(pull) != 6 || pull[1] != mcpGatewayChartOCI || pull[4] != "--version" || pull[5] != "0.8.0" {
+				t.Fatalf("standalone pull lost the chart or version: %q", pull)
+			}
 			args, err := os.ReadFile(argsFile)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(string(args), "upgrade\n--install\n") || !strings.Contains(string(args), "--version\n0.8.0\n") {
-				t.Fatalf("standalone install changed: %s", args)
+			if !strings.HasPrefix(string(args), "upgrade\n--install\nmcp-gateway\n"+filepath.Join(pull[3], "mcp-gateway-0.8.0.tgz")+"\n") {
+				t.Fatalf("standalone install must use the downloaded archive: %s", args)
+			}
+			if _, err := os.Stat(pull[3]); !os.IsNotExist(err) {
+				t.Fatalf("chart directory was not removed: %v", err)
 			}
 		})
 	}
@@ -317,7 +342,7 @@ func TestMCPInstanceResourcesRejectControllerAndCRDs(t *testing.T) {
 func TestMCPGatewayTemplateOptions(t *testing.T) {
 	args := (&mcpGateway{version: "0.9.0", valuesFile: "/tmp/values.yaml"}).templateArgs("/tmp/mcp-gateway.tgz")
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--version 0.9.0") || !strings.Contains(joined, "--values /tmp/values.yaml") {
+	if !strings.Contains(joined, "--values /tmp/values.yaml") {
 		t.Fatalf("missing chart options: %s", joined)
 	}
 	if strings.Index(joined, "controller.enabled=false") < strings.Index(joined, "--values") {
@@ -450,7 +475,7 @@ func TestWaitForMCPListenerReady(t *testing.T) {
 }
 
 func TestMCPGatewayHelmArgsUsePrerequisiteGatewayPort(t *testing.T) {
-	args := (&mcpGateway{valuesFile: "/tmp/custom-values.yaml"}).helmArgs()
+	args := (&mcpGateway{valuesFile: "/tmp/custom-values.yaml"}).helmArgs("/tmp/mcp-gateway-0.8.0.tgz")
 	joined := strings.Join(args, " ")
 
 	valuesAt := strings.Index(joined, "--values /tmp/custom-values.yaml")
@@ -467,6 +492,7 @@ func TestMCPGatewayHelmArgsUsePrerequisiteGatewayPort(t *testing.T) {
 }
 
 func TestMCPGatewayManagedFailuresCleanUpBeforeReturning(t *testing.T) {
+	noDownloadDelays(t)
 	valid := "apiVersion: mcp.kuadrant.io/v1alpha1\nkind: MCPGatewayExtension\nmetadata:\n  name: instance\n  namespace: mcp-gateway-system\n"
 	for _, tc := range []struct {
 		name      string
@@ -481,7 +507,7 @@ func TestMCPGatewayManagedFailuresCleanUpBeforeReturning(t *testing.T) {
 		{name: "missing archive", pullMode: "empty", want: []string{"expected one chart archive"}},
 		{name: "multiple archives", pullMode: "multiple", want: []string{"expected one chart archive"}},
 		{name: "unexpected file", pullMode: "wrong-file", want: []string{"expected one chart archive"}},
-		{name: "missing directory", pullMode: "remove-dir", want: []string{"reading mcp-gateway chart directory"}},
+		{name: "missing directory", pullMode: "remove-dir", want: []string{"pulling mcp-gateway chart", "reading chart directory"}},
 		{name: "malformed YAML", manifest: valid + "---\napiVersion: [\n", want: []string{"decoding mcp-gateway instance"}},
 		{name: "missing kind", manifest: valid + "---\nPulled: unexpected output\nDigest: sha256:1234\n", want: []string{"Kind", "missing"}},
 		{name: "controller", manifest: valid + "---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: controller\n  namespace: mcp-gateway-system\n", want: []string{"unexpected", "Deployment"}},

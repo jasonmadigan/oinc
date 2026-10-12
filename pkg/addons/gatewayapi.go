@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os/exec"
 	"time"
 
+	"github.com/jasonmadigan/oinc/pkg/download"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -65,10 +65,7 @@ func (g *gatewayAPI) Install(ctx context.Context, cfg *Config) error {
 	url := fmt.Sprintf("https://github.com/kubernetes-sigs/gateway-api/releases/download/v%s/standard-install.yaml", v)
 	cfg.Logger.Info("fetching gateway-api CRDs", "url", url)
 
-	if _, err := exec.LookPath("curl"); err != nil {
-		return fmt.Errorf("curl is required but not found in PATH")
-	}
-	data, err := exec.CommandContext(ctx, "curl", "-sSL", "--retry", "3", "--max-time", "30", url).Output()
+	data, err := download.URL(ctx, cfg.Logger, url)
 	if err != nil {
 		return fmt.Errorf("downloading gateway-api manifests: %w", err)
 	}

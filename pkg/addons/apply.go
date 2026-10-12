@@ -6,23 +6,50 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/jasonmadigan/oinc/pkg/download"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// fetchURL downloads a URL using curl (Go's net stack breaks in privileged containers on macOS).
-func fetchURL(ctx context.Context, url string) ([]byte, error) {
-	if _, err := exec.LookPath("curl"); err != nil {
-		return nil, fmt.Errorf("curl is required but not found in PATH")
-	}
-	data, err := exec.CommandContext(ctx, "curl", "-sSL", "--retry", "3", "--max-time", "60", url).Output()
+// pullChart downloads a chart archive into a new temp directory, retrying
+// failed downloads as helm never does, so installs and renders never fetch.
+// the caller removes dir; nothing is left behind on error.
+func pullChart(ctx context.Context, cfg *Config, chart string, args ...string) (dir, archive string, err error) {
+	tmp, err := os.MkdirTemp("", "oinc-chart-")
 	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w", url, err)
+		return "", "", fmt.Errorf("creating chart directory: %w", err)
 	}
-	return data, nil
+	defer func() {
+		if err != nil {
+			os.RemoveAll(tmp)
+		}
+	}()
+
+	pullArgs := append([]string{"pull", chart, "--destination", tmp}, args...)
+	err = download.Retry(ctx, cfg.Logger, chart, func() error {
+		out, err := exec.CommandContext(ctx, "helm", pullArgs...).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return "", "", fmt.Errorf("reading chart directory: %w", err)
+	}
+	if len(entries) != 1 || entries[0].IsDir() || filepath.Ext(entries[0].Name()) != ".tgz" {
+		return "", "", fmt.Errorf("expected one chart archive in %s", tmp)
+	}
+	return tmp, filepath.Join(tmp, entries[0].Name()), nil
 }
 
 // applyManifests applies a multi-document YAML manifest using kubectl server-side apply.
@@ -59,7 +86,7 @@ func applyManifests(ctx context.Context, cfg *Config, manifest []byte) error {
 // applyManifestURL fetches a URL and applies all objects.
 func applyManifestURL(ctx context.Context, cfg *Config, url string) error {
 	cfg.Logger.Info("fetching manifests", "url", url)
-	data, err := fetchURL(ctx, url)
+	data, err := download.URL(ctx, cfg.Logger, url)
 	if err != nil {
 		return err
 	}

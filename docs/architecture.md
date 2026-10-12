@@ -88,9 +88,11 @@ Key design points:
 
 Install methods vary by addon:
 - **Upstream manifests** (gateway-api, cert-manager, metallb): downloaded via curl; cert-manager and metallb use `kubectl apply --server-side`, while gateway-api updates its CRDs through the dynamic Kubernetes client
-- **Helm** (istio, pinned kuadrant releases, rhdh, standalone mcp-gateway): `helm upgrade --install` for idempotency
+- **Helm** (istio, pinned kuadrant releases, rhdh, standalone mcp-gateway): `helm upgrade --install` for idempotency, from a chart archive downloaded first
 - **Kuadrant-managed MCP Gateway**: render the OCI chart with its controller disabled, then apply instance resources using the MCP API version served by Kuadrant's CRDs. Controller and CRD lifecycle stays with Kuadrant.
 - **OLM** (`kuadrant@latest`): install from Kuadrant's compatible latest catalogue
+
+All downloads go through `pkg/download`, which retries failures; see [download retries](addons.md#download-retries).
 
 The base image includes OLM, and `kuadrant@latest` selects the Kuadrant catalogue configured in `pkg/addons/kuadrant.go`. Other addon paths use manifests or Helm. OLM being present does not establish compatibility with every OperatorHub catalogue or operator; validate the selected catalogue on the target build.
 
