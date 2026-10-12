@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"os"
 	"os/exec"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 
 const (
 	defaultKuadrantVersion     = "1.4.1"
+	kuadrantChartRepoURL       = "https://kuadrant.io/helm-charts/"
 	latestKuadrantCatalogImage = "quay.io/kuadrant/kuadrant-operator-catalog:latest"
 )
 
@@ -70,22 +72,17 @@ func (k *kuadrant) installViaHelm(ctx context.Context, cfg *Config, version stri
 
 	cfg.Logger.Info("installing kuadrant operator via helm", "version", version)
 
-	// ensure helm repo
-	out, err := exec.CommandContext(ctx, "helm", "repo", "add", "kuadrant",
-		"https://kuadrant.io/helm-charts/", "--force-update",
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("helm repo add: %s: %w", string(out), err)
-	}
-
-	out, err = exec.CommandContext(ctx, "helm", "repo", "update", "kuadrant").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("helm repo update: %s: %w", string(out), err)
-	}
-
-	out, err = exec.CommandContext(ctx, "helm", "upgrade", "--install",
-		"kuadrant-operator", "kuadrant/kuadrant-operator",
+	dir, chart, err := pullChart(ctx, cfg, "kuadrant-operator",
+		"--repo", kuadrantChartRepoURL,
 		"--version", version,
+	)
+	if err != nil {
+		return fmt.Errorf("pulling kuadrant-operator chart: %w", err)
+	}
+	defer os.RemoveAll(dir)
+
+	out, err := exec.CommandContext(ctx, "helm", "upgrade", "--install",
+		"kuadrant-operator", chart,
 		"--create-namespace",
 		"-n", "kuadrant-system",
 		"--wait",

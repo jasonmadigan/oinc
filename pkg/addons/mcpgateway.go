@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -76,8 +75,8 @@ func (m *mcpGateway) chartVersionArgs() []string {
 	return []string{"--version", v}
 }
 
-func (m *mcpGateway) helmArgs() []string {
-	args := []string{"upgrade", "--install", "mcp-gateway", mcpGatewayChartOCI,
+func (m *mcpGateway) helmArgs(chart string) []string {
+	args := []string{"upgrade", "--install", "mcp-gateway", chart,
 		"--create-namespace",
 		"-n", mcpGatewayNamespace,
 	}
@@ -85,14 +84,13 @@ func (m *mcpGateway) helmArgs() []string {
 	return append(args, "--wait", "--timeout", "5m")
 }
 
+// chartOptions carries no version: the pulled archive already pins it.
 func (m *mcpGateway) chartOptions() []string {
 	var args []string
 	if m.valuesFile != "" {
 		args = append(args, "--values", m.valuesFile)
 	}
-	args = append(args, m.chartVersionArgs()...)
-	args = append(args, "--set", fmt.Sprintf("gateway.port=%d", mcpGatewayListenerPort))
-	return args
+	return append(args, "--set", fmt.Sprintf("gateway.port=%d", mcpGatewayListenerPort))
 }
 
 func (m *mcpGateway) templateArgs(chart string) []string {
@@ -121,13 +119,19 @@ func (m *mcpGateway) Install(ctx context.Context, cfg *Config) error {
 		return m.installManagedInstance(ctx, cfg, managedVersion)
 	}
 
+	cfg.Logger.Info("installing mcp-gateway via helm", "version", m.resolveVersion())
+
+	chartDir, chart, err := pullChart(ctx, cfg, mcpGatewayChartOCI, m.chartVersionArgs()...)
+	if err != nil {
+		return fmt.Errorf("pulling mcp-gateway chart: %w", err)
+	}
+	defer os.RemoveAll(chartDir)
+
 	if err := m.ensureGatewayPrereqs(ctx, cfg); err != nil {
 		return err
 	}
 
-	cfg.Logger.Info("installing mcp-gateway via helm", "version", m.resolveVersion())
-
-	out, err := exec.CommandContext(ctx, "helm", m.helmArgs()...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "helm", m.helmArgs(chart)...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("helm install mcp-gateway: %s: %w", string(out), err)
 	}
@@ -173,27 +177,15 @@ func kuadrantMCPVersion(ctx context.Context, cfg *Config) (string, error) {
 
 func (m *mcpGateway) installManagedInstance(ctx context.Context, cfg *Config, apiVersion string) error {
 	cfg.Logger.Info("configuring mcp-gateway with Kuadrant-managed controller", "chartVersion", m.resolveVersion(), "apiVersion", apiVersion)
-	chartDir, err := os.MkdirTemp("", "oinc-mcp-chart-")
-	if err != nil {
-		return fmt.Errorf("creating mcp-gateway chart directory: %w", err)
-	}
-	defer os.RemoveAll(chartDir)
 
 	// Some Helm versions write OCI pull messages to stdout during template.
 	// Pull separately so the decoder receives only the local chart's manifest.
-	pullArgs := []string{"pull", mcpGatewayChartOCI, "--destination", chartDir}
-	pullArgs = append(pullArgs, m.chartVersionArgs()...)
-	if out, err := exec.CommandContext(ctx, "helm", pullArgs...).CombinedOutput(); err != nil {
-		return fmt.Errorf("pulling mcp-gateway chart: %s: %w", out, err)
-	}
-	charts, err := os.ReadDir(chartDir)
+	chartDir, chart, err := pullChart(ctx, cfg, mcpGatewayChartOCI, m.chartVersionArgs()...)
 	if err != nil {
-		return fmt.Errorf("reading mcp-gateway chart directory: %w", err)
+		return fmt.Errorf("pulling mcp-gateway chart: %w", err)
 	}
-	if len(charts) != 1 || charts[0].IsDir() || filepath.Ext(charts[0].Name()) != ".tgz" {
-		return fmt.Errorf("pulling mcp-gateway chart: expected one chart archive in %s", chartDir)
-	}
-	chart := filepath.Join(chartDir, charts[0].Name())
+	defer os.RemoveAll(chartDir)
+
 	cmd := exec.CommandContext(ctx, "helm", m.templateArgs(chart)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

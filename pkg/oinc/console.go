@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jasonmadigan/oinc/pkg/download"
 	"github.com/jasonmadigan/oinc/pkg/kubeconfig"
 	"github.com/jasonmadigan/oinc/pkg/pullsecret"
 	"github.com/jasonmadigan/oinc/pkg/runtime"
@@ -80,7 +80,7 @@ func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion
 
 	// apply ConsolePlugin CRD
 	logger.Info("installing ConsolePlugin CRD")
-	if err := applyConsolePluginCRD(dynClient, ver); err != nil {
+	if err := applyConsolePluginCRD(dynClient, ver, logger); err != nil {
 		return fmt.Errorf("applying ConsolePlugin CRD: %w", err)
 	}
 
@@ -113,15 +113,10 @@ func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion
 	return nil
 }
 
-func applyConsolePluginCRD(dynClient dynamic.Interface, ver version.OCPVersion) error {
-	crdURL := ver.ConsolePluginCRDURL()
-
-	if _, err := exec.LookPath("curl"); err != nil {
-		return fmt.Errorf("curl is required but not found in PATH")
-	}
-	body, err := exec.Command("curl", "-sSL", "--retry", "3", "--max-time", "30", crdURL).Output()
+func applyConsolePluginCRD(dynClient dynamic.Interface, ver version.OCPVersion, logger *slog.Logger) error {
+	body, err := download.URL(context.TODO(), logger, ver.ConsolePluginCRDURL())
 	if err != nil {
-		return fmt.Errorf("fetching CRD from %s: %w", crdURL, err)
+		return err
 	}
 
 	obj := &unstructured.Unstructured{}

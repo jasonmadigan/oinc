@@ -3,6 +3,7 @@ package addons
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -46,8 +47,14 @@ func (i *istio) Install(ctx context.Context, cfg *Config) error {
 	chartURL := fmt.Sprintf("https://github.com/istio-ecosystem/sail-operator/releases/download/%s/sail-operator-%s.tgz", v, v)
 	cfg.Logger.Info("installing sail operator via helm", "version", v)
 
+	dir, chart, err := pullChart(ctx, cfg, chartURL)
+	if err != nil {
+		return fmt.Errorf("pulling sail-operator chart: %w", err)
+	}
+	defer os.RemoveAll(dir)
+
 	out, err := exec.CommandContext(ctx, "helm", "upgrade", "--install",
-		"sail-operator", chartURL,
+		"sail-operator", chart,
 		"--create-namespace",
 		"-n", "sail-operator",
 		"--wait",
