@@ -6,12 +6,12 @@ Each supported OCP version is an entry in `pkg/version/version.go`. An entry coo
 
 - **MicroShift image tag** -- the pre-built MicroShift container image on GHCR
 - **Replacement image tag** -- optional OINC revision for rebuilding a payload without reusing an old cached image
-- **Console image tag** -- the `origin-console` image from quay.io
+- **Console images** -- the OKD payload's Console by digest, and any native arm64 rebuild
 - **openshift/api branch** -- for fetching the ConsolePlugin CRD during Console setup
 
 All catalogue builds are OKD MicroShift. OCP version names identify compatibility with the Console and API branch. For the separate Red Hat rc0/rc1 artifacts and local test findings, see [OCP release candidates](ocp-release-candidates.md).
 
-From 5.0 an entry pins its Console per architecture (`ConsoleImages`) instead of an `origin-console` tag. See [Console images](images.md#console-images).
+Each entry pins its OKD payload's Console by digest (`ConsoleImages`) rather than a moving `origin-console` tag. A newer payload in the same minor reuses that Console. See [Console images](images.md#console-images).
 
 The last **stable** entry in the catalogue is the default. Entries whose OKD tags contain `ec` or `rc` are pre-release and are never the default. `oinc create` selects this pin unless a version is explicitly chosen; the interactive picker marks prereleases.
 
@@ -63,7 +63,7 @@ Or manually:
 2. Check that upstream resources exist:
    - `openshift/api` branch `release-{version}`
    - openshift-deps mirror directory `{version}-el9-beta`
-   - Console image `quay.io/openshift/origin-console:{version}`, or the release payload's `console` image. Check its architectures and that it starts under emulation on an ARM host; if not, pin per-architecture images (see [Console images](images.md#console-images))
+   - The release payload's `console` image (`oc adm release info --image-for=console`), to pin by digest. Check its architectures and that it starts under emulation on an ARM host; if not, add a native arm64 build (see [Console images](images.md#console-images))
 
 3. Add catalogue entry in `pkg/version/version.go`
 
@@ -89,7 +89,7 @@ When a new version is added, these things may need updating:
 | Component | Where | What to check |
 |-|-|-|
 | Console CRD | `pkg/oinc/console.go` | Fetched from `openshift/api` at the release branch, adapts automatically |
-| Console image | `pkg/version/version.go`, `.github/workflows/images.yml` | `origin-console` tag, or `ConsoleImages` plus the workflow's `console` matrix |
+| Console image | `pkg/version/version.go`, `.github/workflows/images.yml` | Payload Console digest in `ConsoleImages`, plus the workflow's `console` matrix for a native arm64 build |
 | Gateway API CRDs | `pkg/addons/gatewayapi.go` | Version pinned independently, not tied to OCP version |
 | Addon versions | `pkg/addons/*.go` | cert-manager, metallb, etc. are pinned independently |
 

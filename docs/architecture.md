@@ -57,7 +57,7 @@ The CLI sets the container hostname to `127.0.0.1.nip.io` and maps host port 644
 
 ## Console sidecar
 
-The OpenShift Console runs as a separate container (`oinc-console`). Up to 4.22 it uses `quay.io/openshift/origin-console`; from 5.0 it uses the OKD payload's Console, with a native build on arm64.
+The OpenShift Console runs as a separate container (`oinc-console`), using the OKD payload's Console pinned by digest. From 5.0 arm64 hosts get a native build.
 
 Setup flow:
 1. Apply ConsolePlugin CRD (fetched from `openshift/api` at the correct branch)
@@ -65,7 +65,7 @@ Setup flow:
 3. Generate a long-lived bearer token
 4. Start console container with env vars pointing at the API server
 
-Note: `origin-console` is amd64-only. On ARM hosts it runs via Rosetta/emulation. The 5.0 Console's CentOS Stream 10 base fails under that emulation, so 5.0 pins a native arm64 image. See [Console images](images.md#console-images).
+Note: the payload Console is amd64-only. On ARM hosts it runs via Rosetta/emulation. The 5.0 Console's CentOS Stream 10 base fails under that emulation, so 5.0 pins a native arm64 image. See [Console images](images.md#console-images).
 
 ## Addon system
 

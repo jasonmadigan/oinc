@@ -268,7 +268,7 @@ func main() {
 					marker = "  " + tui.Green.Render("[default]")
 				}
 				rows = append(rows, fmt.Sprintf("  %-6s %s%s",
-					v.Version, tui.Dim.Render(fmt.Sprintf("microshift: %s, console: %s, arch: %s", v.MicroShiftTag, v.ConsoleTag, strings.Join(v.Arches, ","))), marker))
+					v.Version, tui.Dim.Render(fmt.Sprintf("microshift: %s, console: %s, arch: %s", v.MicroShiftTag, v.Minor, strings.Join(v.Arches, ","))), marker))
 			}
 			box := tui.Box.Render(strings.Join(rows, "\n"))
 			fmt.Println(indent(box, 2))

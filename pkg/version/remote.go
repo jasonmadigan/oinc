@@ -47,7 +47,7 @@ func ResolveContext(ctx context.Context, selector string) (OCPVersion, error) {
 }
 
 func matchesSeries(v OCPVersion, series string) bool {
-	return series == "" || v.ConsoleTag == series || strings.SplitN(v.ConsoleTag, ".", 2)[0] == series
+	return series == "" || v.Minor == series || strings.SplitN(v.Minor, ".", 2)[0] == series
 }
 
 func latestFor(versions []OCPVersion, series, arch string, prereleases bool) (OCPVersion, error) {

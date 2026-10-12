@@ -32,9 +32,9 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 | OCP | OKD component payload | Console | Architectures |
 |-|-|-|-|
 | 5.0 (default) | 5.0.0-okd-scos.0 | 5.0.0-okd-scos.0 payload | amd64, arm64 |
-| 4.22 (pre-release) | 4.22.0-okd-scos.ec.16 | 4.22 | amd64, arm64 |
-| 4.21 (pre-release) | 4.21.0-okd-scos.ec.15 | 4.21 | amd64, arm64 |
-| 4.20 | 4.20.0-okd-scos.16 | 4.20 | amd64, arm64 |
+| 4.22 (pre-release) | 4.22.0-okd-scos.ec.16 | 4.22.0-okd-scos.ec.16 payload | amd64, arm64 |
+| 4.21 (pre-release) | 4.21.0-okd-scos.ec.15 | 4.21.0-okd-scos.ec.15 payload | amd64, arm64 |
+| 4.20 | 4.20.0-okd-scos.16 | 4.20.0-okd-scos.16 payload | amd64, arm64 |
 
 All entries use **OKD MicroShift** builds. The OCP minor identifies the matching Console and API branch; it does not select a Red Hat OCP payload.
 
@@ -42,7 +42,7 @@ The 5.0 image builds MicroShift from a pinned `release-5.0` commit (the upstream
 
 The 5.0 replacement images are published for amd64 and arm64. Native amd64 Docker/Podman smoke tests and local native ARM checks passed on 29 September 2026.
 
-Up to 4.22 the Console is the amd64-only `origin-console` image, emulated on ARM. 5.0's Console cannot run under that emulation, so ARM hosts get a native build of the same source. See [Console images](docs/images.md#console-images).
+Each version runs the Console from its OKD payload, pinned by digest. Up to 4.22 it is amd64-only and emulated on ARM. 5.0's Console cannot run under that emulation, so ARM hosts get a native build of the same source. See [Console images](docs/images.md#console-images).
 
 The default is the newest stable OKD payload pin in the catalogue. Payload tags containing `ec` or `rc` require an explicit selection; this classification does not describe the MicroShift source's release status. To follow published builds:
 

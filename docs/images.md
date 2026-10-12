@@ -73,22 +73,24 @@ Optional `version` input filters to a single OCP version.
 
 ## Console images
 
-Up to 4.22 the Console is `quay.io/openshift/origin-console:<minor>`. It is amd64-only, so ARM hosts run it under emulation.
+Each catalogue entry runs the Console from its OKD payload, pinned by digest in `ConsoleImages` in `pkg/version/version.go`. The `quay.io/openshift/origin-console:<minor>` tags are not release builds and can move: on 12 October 2026 `origin-console:4.22` held an 8 July build of openshift/console `main`. oinc does not refresh a cached Console, so a moving tag also leaves each host on whatever build it pulled first.
 
-From 5.0 the Console is built on CentOS Stream 10, whose glibc requires x86-64-v3. amd64 emulation under OrbStack on Apple Silicon does not provide it, so the container exits at once:
+| Minor | Payload | amd64 Console | Source |
+|-|-|-|-|
+| 4.20 | `4.20.0-okd-scos.16` | `quay.io/okd/scos-content@sha256:23f8ab55...` | `7504ae43`, `release-4.20` |
+| 4.21 | `4.21.0-okd-scos.ec.15` | `quay.io/okd/scos-content@sha256:7b386635...` | `4b8da822`, `main` |
+| 4.22 | `4.22.0-okd-scos.ec.16` | `quay.io/okd/scos-content@sha256:923f8700...` | `f6de0e73`, `release-4.22` |
+| 5.0 | `5.0.0-okd-scos.0` | `quay.io/okd/scos-content@sha256:947e41d0...` | `e15ec744`, `release-5.0` |
+
+A newer payload selected by full tag or channel reuses its minor's pinned Console.
+
+These images are amd64-only. Up to 4.22 they are based on CentOS Stream 9, and ARM hosts run them under emulation. From 5.0 the Console is built on CentOS Stream 10, whose glibc requires x86-64-v3. amd64 emulation under OrbStack on Apple Silicon does not provide it, so the container exits at once:
 
 ```text
 Fatal glibc error: CPU does not support x86-64-v3
 ```
 
-The `origin-console:5.0` image inspected on 28 September 2026 was a 10 August build of openshift/console `main`, not the release. That tag can move. 5.0 therefore uses the OKD payload's Console, pinned per architecture by `ConsoleImages` in `pkg/version/version.go`:
-
-| Arch | Image |
-|-|-|
-| amd64 | payload Console, `quay.io/okd/scos-content@sha256:947e41d0...` for `5.0.0-okd-scos.0` |
-| arm64 | native rebuild of that Console, `ghcr.io/jasonmadigan/oinc-console:5.0.0-okd-scos.0-arm64` |
-
-`images/Containerfile.console` builds the arm64 image. It rebuilds `bridge` from the upstream image's source commit with the CentOS Stream 9 Go toolset, matching upstream's el9 builder, and copies the frontend assets unchanged from the upstream image. The build fails unless the upstream binary's version string names `CONSOLE_COMMIT`. The image workflow's `console` job publishes it; custom OKD builds skip that job and reuse the minor's Console.
+5.0 therefore also pins a native arm64 rebuild, `ghcr.io/jasonmadigan/oinc-console:5.0.0-okd-scos.0-arm64`. `images/Containerfile.console` builds it. It rebuilds `bridge` from the upstream image's source commit with the CentOS Stream 9 Go toolset, matching upstream's el9 builder, and copies the frontend assets unchanged from the upstream image. The build fails unless the upstream binary's version string names `CONSOLE_COMMIT`. The image workflow's `console` job publishes it; custom OKD builds skip that job and reuse the minor's Console.
 
 To find the inputs for a payload:
 
@@ -151,14 +153,18 @@ For source builds, add a release lock instead. Check that the MicroShift source 
 
 2. Add the minor to the `version` input choices and matrix entries in `.github/workflows/images.yml` for both `amd64` and `arm64`, each with `okd_version` plus `release_tag` and `tarball_sha256`, or `copr_pin`; source builds set `source_lock` and `image_tag` instead
 
-3. Add catalogue entry in `pkg/version/version.go`:
+3. Add catalogue entry in `pkg/version/version.go`, pinning the payload's Console by digest (see [Console images](#console-images)). A native arm64 Console also needs an entry in the workflow's `console` matrix:
    ```go
    {
        Version:       "5.1",
        MicroShiftTag: "5.1.0-okd-scos.1",
-       ConsoleTag:    "5.1",
-       APIBranch:     "release-5.1",
-       Arches:        []string{"amd64", "arm64"},
+       Minor:         "5.1",
+       ConsoleImages: map[string]string{
+           "amd64": "quay.io/okd/scos-content@sha256:<digest>",
+           "arm64": ConsoleRegistry + ":5.1.0-okd-scos.1-arm64",
+       },
+       APIBranch: "release-5.1",
+       Arches:    []string{"amd64", "arm64"},
    },
    ```
 
