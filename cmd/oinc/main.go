@@ -28,6 +28,7 @@ var (
 	flagHTTPSPort       int
 	flagConsolePort     int
 	flagConsPlugin      string
+	flagConsoleBranding = consoleBranding(oinc.DefaultConsoleBranding)
 	flagAddons          string
 	flagLogLevel        string
 	flagOutput          string
@@ -101,6 +102,27 @@ func addInstanceFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&flagGatewayAPIGateway, "gateway-api-gateway", false, "gateway-api addon: create a default Gateway (kuadrant-ingressgateway, istio class) and wait for it to be programmed")
 }
 
+// consoleBranding validates --console-branding while flags parse, so switch
+// fails before it deletes the cluster.
+type consoleBranding string
+
+func (b consoleBranding) String() string { return string(b) }
+
+func (b consoleBranding) Type() string { return "string" }
+
+func (b *consoleBranding) Set(value string) error {
+	if err := oinc.ValidateConsoleBranding(value); err != nil {
+		return err
+	}
+	*b = consoleBranding(value)
+	return nil
+}
+
+// addConsoleBrandingFlag registers --console-branding on a command that starts the Console.
+func addConsoleBrandingFlag(cmd *cobra.Command) {
+	cmd.Flags().Var(&flagConsoleBranding, "console-branding", "console branding ("+strings.Join(oinc.ConsoleBrandings(), ", ")+")")
+}
+
 var buildVersion = "dev"
 
 func newLogger(level string) *slog.Logger {
@@ -159,9 +181,12 @@ func main() {
 				RuntimeOverride: flagRuntime,
 				HTTPPort:        flagHTTPPort,
 				HTTPSPort:       flagHTTPSPort,
-				ConsolePort:     flagConsolePort,
-				ConsolePlugin:   flagConsPlugin,
-				Addons:          flagAddons,
+				Console: oinc.ConsoleOpts{
+					Port:     flagConsolePort,
+					Plugin:   flagConsPlugin,
+					Branding: string(flagConsoleBranding),
+				},
+				Addons: flagAddons,
 			}, logger)
 		},
 	}
@@ -170,6 +195,7 @@ func main() {
 	createCmd.Flags().IntVar(&flagHTTPSPort, "https-port", 9443, "HTTPS route port")
 	createCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
 	createCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring (name=url)")
+	addConsoleBrandingFlag(createCmd)
 	createCmd.Flags().StringVar(&flagAddons, "addons", "", "comma-separated addons to install")
 	addRHDHFlags(createCmd)
 	addMCPGatewayFlags(createCmd)
@@ -300,8 +326,11 @@ func main() {
 				RuntimeOverride: flagRuntime,
 				HTTPPort:        flagHTTPPort,
 				HTTPSPort:       flagHTTPSPort,
-				ConsolePort:     flagConsolePort,
-				ConsolePlugin:   flagConsPlugin,
+				Console: oinc.ConsoleOpts{
+					Port:     flagConsolePort,
+					Plugin:   flagConsPlugin,
+					Branding: string(flagConsoleBranding),
+				},
 			}, logger)
 		},
 	}
@@ -309,6 +338,7 @@ func main() {
 	switchCmd.Flags().IntVar(&flagHTTPSPort, "https-port", 9443, "HTTPS route port")
 	switchCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
 	switchCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring (name=url)")
+	addConsoleBrandingFlag(switchCmd)
 
 	consoleCmd := &cobra.Command{
 		Use:   "console",
@@ -329,14 +359,14 @@ func main() {
 				cmd.Context(),
 				flagRuntime,
 				args[0],
-				flagConsPlugin,
-				flagConsolePort,
+				oinc.ConsoleOpts{Port: flagConsolePort, Plugin: flagConsPlugin, Branding: string(flagConsoleBranding)},
 				newLogger(flagLogLevel),
 			)
 		},
 	}
 	consoleSyncCmd.Flags().IntVar(&flagConsolePort, "console-port", 9000, "console port")
 	consoleSyncCmd.Flags().StringVar(&flagConsPlugin, "console-plugin", "", "console plugin wiring to preserve (name=url)")
+	addConsoleBrandingFlag(consoleSyncCmd)
 	consoleCmd.AddCommand(consoleSyncCmd)
 
 	addonCmd := &cobra.Command{

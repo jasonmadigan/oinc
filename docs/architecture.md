@@ -65,6 +65,8 @@ Setup flow:
 3. Generate a long-lived bearer token
 4. Start console container with env vars pointing at the API server
 
+Branding defaults to `ocp` (`--console-branding` on `create`, `switch` and `console sync-plugin-proxy`); Bridge's own default is `okd`. Any other branding also sets `BRIDGE_DOCUMENTATION_BASE_URL` to Red Hat's `latest` OCP docs. Those brandings build docs links from it with no fallback, and unreleased minors such as 5.0 have no docs yet.
+
 Note: the payload Console is amd64-only. On ARM hosts it runs via Rosetta/emulation. The 5.0 Console's CentOS Stream 10 base fails under that emulation, so 5.0 pins a native arm64 image. See [Console images](images.md#console-images).
 
 ## Addon system

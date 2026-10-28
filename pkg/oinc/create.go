@@ -31,8 +31,7 @@ type CreateOpts struct {
 	RuntimeOverride string
 	HTTPPort        int
 	HTTPSPort       int
-	ConsolePort     int
-	ConsolePlugin   string
+	Console         ConsoleOpts
 	Addons          string
 }
 
@@ -143,7 +142,7 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 		}},
 		&tui.Step{Name: "setting up console", Run: func() error {
 			logger := slog.New(slog.NewTextHandler(devNull{}, nil))
-			return setupConsole(rt, raw, ver, opts.ConsolePort, opts.ConsolePlugin, logger)
+			return setupConsole(rt, raw, ver, opts.Console, logger)
 		}},
 	)
 
@@ -265,7 +264,7 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 	}
 
 	logger.Info("setting up console")
-	if err := setupConsole(rt, raw, ver, opts.ConsolePort, opts.ConsolePlugin, logger); err != nil {
+	if err := setupConsole(rt, raw, ver, opts.Console, logger); err != nil {
 		return fmt.Errorf("console setup: %w", err)
 	}
 

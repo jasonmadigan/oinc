@@ -359,7 +359,7 @@ esac
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := startConsoleContainer(rt, ver, "test-token", 9000, "", nil); err != nil {
+		if err := startConsoleContainer(rt, ver, "test-token", ConsoleOpts{Port: 9000}, nil); err != nil {
 			t.Fatal(err)
 		}
 		args, err := os.ReadFile(capture)
@@ -373,5 +373,101 @@ esac
 		if !strings.Contains(string(args), "--platform\n"+platform+"\n") || !strings.HasSuffix(string(args), "\n"+image+"\n") {
 			t.Fatalf("%s console launch did not request %s on %s: %s", selector, image, platform, args)
 		}
+	}
+}
+
+// fakeConsoleRuntime records the subcommand of every runtime call and the full
+// argument list of the last create.
+func fakeConsoleRuntime(t *testing.T) (rt *runtime.Runtime, createArgs, calls string) {
+	t.Helper()
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "docker")
+	script := `#!/bin/sh
+printf '%s\n' "$1" >> "$OINC_TEST_CALLS"
+case "$1" in
+  info) printf '{"CgroupVersion":"2"}';;
+  create) printf '%s\n' "$@" > "$OINC_TEST_ARGS";;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	createArgs = filepath.Join(dir, "args")
+	calls = filepath.Join(dir, "calls")
+	t.Setenv("OINC_TEST_ARGS", createArgs)
+	t.Setenv("OINC_TEST_CALLS", calls)
+	rt, err := runtime.Detect(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt, createArgs, calls
+}
+
+func createdEnv(t *testing.T, createArgs string) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(createArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	env := map[string]string{}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-e" {
+			key, value, _ := strings.Cut(args[i+1], "=")
+			env[key] = value
+			i++
+		}
+	}
+	return env
+}
+
+func TestStartConsoleBranding(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("OINC_CONFIG_DIR", configDir)
+	if err := os.WriteFile(filepath.Join(configDir, "pull-secret.json"), []byte(`{"auths":{"quay.io":{"auth":"dummy"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const redHatDocs = "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/"
+	for _, tc := range []struct {
+		name, version, branding, want, wantDocs string
+	}{
+		{"OKD defaults to OCP branding", "4.22", "", "ocp", redHatDocs},
+		{"OKD keeps an explicit choice", "4.22", "okd", "okd", ""},
+		{"any Red Hat brand gets Red Hat docs", "5.0", "rosa", "rosa", redHatDocs},
+		{"Red Hat preview keeps an explicit choice", "ocp-4.23", "okd", "okd", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, createArgs, _ := fakeConsoleRuntime(t)
+			ver, err := version.Resolve(tc.version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := startConsoleContainer(rt, ver, "test-token", ConsoleOpts{Port: 9000, Branding: tc.branding}, nil); err != nil {
+				t.Fatal(err)
+			}
+			env := createdEnv(t, createArgs)
+			if got := env["BRIDGE_BRANDING"]; got != tc.want {
+				t.Fatalf("BRIDGE_BRANDING = %q, want %q", got, tc.want)
+			}
+			if got := env["BRIDGE_DOCUMENTATION_BASE_URL"]; got != tc.wantDocs {
+				t.Fatalf("BRIDGE_DOCUMENTATION_BASE_URL = %q, want %q", got, tc.wantDocs)
+			}
+		})
+	}
+}
+
+func TestStartConsoleRejectsUnknownBrandingBeforeReplacingConsole(t *testing.T) {
+	rt, _, calls := fakeConsoleRuntime(t)
+	ver, err := version.Resolve("4.22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(calls)
+	if err := startConsoleContainer(rt, ver, "test-token", ConsoleOpts{Port: 9000, Branding: "redhat"}, nil); err == nil {
+		t.Fatal("unknown branding was accepted")
+	}
+	after, _ := os.ReadFile(calls)
+	if string(after) != string(before) {
+		t.Fatalf("runtime was called before the branding was rejected: %q", strings.TrimPrefix(string(after), string(before)))
 	}
 }
