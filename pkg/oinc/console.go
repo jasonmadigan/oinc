@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -39,10 +40,37 @@ const (
 	consoleSANS        = "kube-system"
 	consoleContainer   = "oinc-console"
 	consoleProxyCAPath = "/var/run/oinc/service-ca.crt"
+
+	// DefaultConsoleBranding shows Red Hat OpenShift branding; Bridge itself defaults to okd.
+	DefaultConsoleBranding = "ocp"
+
+	// non-okd brandings build docs links from this with no fallback. latest,
+	// matching OKD's own default; versioned urls 404 for unreleased minors
+	redHatDocsBaseURL = "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/"
 )
+
+// ConsoleBrandings lists the values Bridge accepts for --branding.
+func ConsoleBrandings() []string {
+	return []string{"okd", "openshift", "ocp", "online", "dedicated", "azure", "rosa"}
+}
+
+// ValidateConsoleBranding rejects values Bridge would refuse at start-up.
+func ValidateConsoleBranding(branding string) error {
+	if slices.Contains(ConsoleBrandings(), branding) {
+		return nil
+	}
+	return fmt.Errorf("unknown console branding %q; use one of %s", branding, strings.Join(ConsoleBrandings(), ", "))
+}
 
 var consolePluginGVR = schema.GroupVersionResource{
 	Group: "console.openshift.io", Version: "v1", Resource: "consoleplugins",
+}
+
+// ConsoleOpts configures the standalone development Console.
+type ConsoleOpts struct {
+	Port     int
+	Plugin   string // name=url
+	Branding string
 }
 
 type consoleProxyOptions struct {
@@ -62,7 +90,7 @@ type bridgePluginProxyService struct {
 	CACertificate  string `json:"caCertificate,omitempty"`
 }
 
-func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion, consolePort int, consolePlugin string, logger *slog.Logger) error {
+func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion, console ConsoleOpts, logger *slog.Logger) error {
 	config, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	if err != nil {
 		return fmt.Errorf("building rest config: %w", err)
@@ -99,17 +127,17 @@ func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion
 
 	// start console container
 	logger.Info("starting console container")
-	if err := startConsoleContainer(rt, ver, token, consolePort, consolePlugin, nil); err != nil {
+	if err := startConsoleContainer(rt, ver, token, console, nil); err != nil {
 		return fmt.Errorf("starting console: %w", err)
 	}
 
 	// wait for console to be reachable
-	logger.Info("waiting for console", "url", fmt.Sprintf("http://localhost:%d", consolePort))
-	if err := waitForConsole(consolePort); err != nil {
+	logger.Info("waiting for console", "url", fmt.Sprintf("http://localhost:%d", console.Port))
+	if err := waitForConsole(console.Port); err != nil {
 		return fmt.Errorf("console not reachable: %w", err)
 	}
 
-	logger.Info("console ready", "url", fmt.Sprintf("http://localhost:%d", consolePort))
+	logger.Info("console ready", "url", fmt.Sprintf("http://localhost:%d", console.Port))
 	return nil
 }
 
@@ -246,7 +274,15 @@ func createBearerToken(client kubernetes.Interface) (string, error) {
 	return resp.Status.Token, nil
 }
 
-func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token string, consolePort int, consolePlugin string, proxyOptions *consoleProxyOptions) error {
+func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token string, console ConsoleOpts, proxyOptions *consoleProxyOptions) error {
+	branding := console.Branding
+	if branding == "" {
+		branding = DefaultConsoleBranding
+	}
+	if err := ValidateConsoleBranding(branding); err != nil {
+		return err
+	}
+
 	image, platform := ver.ConsoleImageRef()
 	if ver.RequiresPullSecret {
 		path, err := pullsecret.RequiredPath()
@@ -272,8 +308,8 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		"BRIDGE_USER_SETTINGS_LOCATION":               "localstorage",
 	}
 
-	if consolePlugin != "" {
-		resolved := resolvePluginURL(consolePlugin, rt.ContainerHostAddress())
+	if console.Plugin != "" {
+		resolved := resolvePluginURL(console.Plugin, rt.ContainerHostAddress())
 		parts := strings.SplitN(resolved, "=", 2)
 		if len(parts) == 2 {
 			env["BRIDGE_PLUGINS"] = resolved
@@ -287,9 +323,11 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		}
 	}
 
-	if ver.RequiresPullSecret {
-		env["BRIDGE_BRANDING"] = "ocp"
+	env["BRIDGE_BRANDING"] = branding
+	if branding != "okd" {
+		env["BRIDGE_DOCUMENTATION_BASE_URL"] = redHatDocsBaseURL
 	}
+
 	opts := runtime.ContainerOpts{
 		Name:     consoleContainer,
 		Image:    image,
@@ -309,7 +347,7 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		opts.Network = "host"
 	} else {
 		opts.Ports = []runtime.PortMapping{
-			{Host: consolePort, Container: 9000},
+			{Host: console.Port, Container: 9000},
 		}
 	}
 
@@ -323,7 +361,7 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 // proxy entries reconciled into a ConsolePlugin resource. Real OpenShift uses
 // the Console operator for this translation; OINC deliberately runs Bridge on
 // its own and therefore needs this explicit development adapter.
-func SyncConsolePluginProxy(ctx context.Context, runtimeOverride, pluginName, consolePlugin string, consolePort int, logger *slog.Logger) error {
+func SyncConsolePluginProxy(ctx context.Context, runtimeOverride, pluginName string, console ConsoleOpts, logger *slog.Logger) error {
 	rt, err := runtime.DetectOwner(runtimeOverride, containerName)
 	if err != nil {
 		return err
@@ -364,13 +402,13 @@ func SyncConsolePluginProxy(ctx context.Context, runtimeOverride, pluginName, co
 	if err != nil {
 		return fmt.Errorf("creating console bearer token: %w", err)
 	}
-	if err := startConsoleContainer(rt, ver, token, consolePort, consolePlugin, proxyOptions); err != nil {
+	if err := startConsoleContainer(rt, ver, token, console, proxyOptions); err != nil {
 		return fmt.Errorf("restarting Console with plugin proxies: %w", err)
 	}
-	if err := waitForConsole(consolePort); err != nil {
+	if err := waitForConsole(console.Port); err != nil {
 		return err
 	}
-	logger.Info("console plugin proxies configured", "plugin", pluginName, "url", fmt.Sprintf("http://localhost:%d", consolePort))
+	logger.Info("console plugin proxies configured", "plugin", pluginName, "url", fmt.Sprintf("http://localhost:%d", console.Port))
 	return nil
 }
 

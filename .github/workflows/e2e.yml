@@ -57,6 +57,12 @@ jobs:
         run: '"$PREFIX" bin/oinc create --version "$OINC_VERSION" --runtime "$CR"'
         timeout-minutes: 10
 
+      - name: Assert the Console serves Red Hat branding
+        run: |
+          curl -fsS http://localhost:9000/ > /tmp/console.html
+          grep -F '"branding":"ocp"' /tmp/console.html
+          grep -E '"documentationBaseURL":"https://[^"]+/"' /tmp/console.html
+
       - name: Assert skopeo ships in the oinc image
         run: '"$PREFIX" "$CR" exec oinc sh -c "command -v skopeo"'
 

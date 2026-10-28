@@ -23,6 +23,7 @@ End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurre
 - Matrix over host runtime (docker and podman on `ubuntu-latest`; the podman leg runs rootful via sudo) and catalogue version (4.22, 5.0)
 - Runs `go vet`, `go test`, builds the CLI
 - Creates a cluster with the matrix version; create waits for the Console, so this also checks it starts on amd64
+- Asserts the Console serves the default `ocp` branding and an absolute docs base URL
 - Asserts skopeo is present in the oinc image
 - On 5.0, checks the embedded release lock, MicroShift/base/CRI-O minor versions and the node's Kubernetes version
 - Asserts `oinc load-image` rejects a ref missing host-side

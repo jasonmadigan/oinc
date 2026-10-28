@@ -102,6 +102,9 @@ oinc create --addons cert-manager@1.16.0,metallb@0.14.8
 # wire in a console plugin dev server
 oinc create --console-plugin "my-plugin=http://host.docker.internal:9001"
 
+# OKD Console branding instead of the default Red Hat OpenShift
+oinc create --console-branding okd
+
 # after the plugin operator creates a ConsolePlugin with service proxies,
 # restart the standalone dev Console with those proxies
 oinc console sync-plugin-proxy my-plugin \
@@ -258,7 +261,9 @@ shadow Services so the Console container can reach the in-cluster backends,
 mounts the OpenShift service CA, and restarts the standalone Console. It does
 not change the product deployment contract: the plugin operator remains the
 source of truth for the backend Service and `ConsolePlugin` resource.
-Reload the browser after the Console restarts.
+Reload the browser after the Console restarts. The restart does not read back
+earlier Console settings, so pass any non-default `--console-port` or
+`--console-branding` again.
 
 ## Ports
 
