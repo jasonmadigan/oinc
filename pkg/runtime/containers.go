@@ -300,6 +300,10 @@ type ContainerInfo struct {
 	Image     string
 	StartedAt time.Time
 	Ports     map[int]int // container port -> host port
+	// settings the container was created with, for recreating it changed
+	Env        map[string]string
+	Binds      []string
+	ExtraHosts map[string]string // hostname -> address
 }
 
 func (r *Runtime) InspectContainer(name string) (*ContainerInfo, error) {
@@ -307,13 +311,16 @@ func (r *Runtime) InspectContainer(name string) (*ContainerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return containerInfoFromInspect(out)
+}
 
+func containerInfoFromInspect(out []byte) (*ContainerInfo, error) {
 	var raw []map[string]any
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parsing inspect output: %w", err)
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("empty inspect result for %s", name)
+		return nil, fmt.Errorf("empty inspect result")
 	}
 
 	data := raw[0]
@@ -329,6 +336,27 @@ func (r *Runtime) InspectContainer(name string) (*ContainerInfo, error) {
 	if cfg, ok := data["Config"].(map[string]any); ok {
 		if img, ok := cfg["Image"].(string); ok {
 			info.Image = img
+		}
+		for _, entry := range stringSlice(cfg["Env"]) {
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				if info.Env == nil {
+					info.Env = map[string]string{}
+				}
+				info.Env[key] = value
+			}
+		}
+	}
+
+	if host, ok := data["HostConfig"].(map[string]any); ok {
+		info.Binds = stringSlice(host["Binds"])
+		for _, entry := range stringSlice(host["ExtraHosts"]) {
+			// hostname:address, where the address may be IPv6
+			if hostname, address, ok := strings.Cut(entry, ":"); ok {
+				if info.ExtraHosts == nil {
+					info.ExtraHosts = map[string]string{}
+				}
+				info.ExtraHosts[hostname] = address
+			}
 		}
 	}
 
@@ -359,4 +387,16 @@ func (r *Runtime) InspectContainer(name string) (*ContainerInfo, error) {
 	}
 
 	return info, nil
+}
+
+// stringSlice reads a JSON array of strings, skipping anything else.
+func stringSlice(v any) []string {
+	items, _ := v.([]any)
+	var out []string
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }

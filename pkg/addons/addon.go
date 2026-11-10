@@ -2,8 +2,10 @@ package addons
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,6 +28,14 @@ type Config struct {
 	IngressHost     string
 	IngressHTTPPort int
 	IngressErr      error
+	// OpenShift minor the cluster corresponds to (4.23) and the openshift/api
+	// branch that goes with it, for addons that install OpenShift API types.
+	// empty when the cluster image is not a known version
+	OpenShiftVersion   string
+	OpenShiftAPIBranch string
+	// LoadConsolePlugin has the cluster's Console load the plugin that a
+	// ConsolePlugin resource describes. nil when there is no Console.
+	LoadConsolePlugin func(ctx context.Context, name string) error
 }
 
 type Addon interface {
@@ -59,12 +69,74 @@ func Validate(list []Addon) error {
 	return nil
 }
 
+// ClusterValidator is implemented by addons that can only be installed on a
+// cluster in a particular state. It runs once the cluster is reachable and
+// before any addon in the request is installed.
+type ClusterValidator interface {
+	ValidateCluster(ctx context.Context, cfg *Config) error
+}
+
+// ValidateCluster runs the ClusterValidator hook on each addon.
+func ValidateCluster(ctx context.Context, list []Addon, cfg *Config) error {
+	for _, a := range list {
+		if v, ok := a.(ClusterValidator); ok {
+			if err := v.ValidateCluster(ctx, cfg); err != nil {
+				return fmt.Errorf("%s: %w", a.Name(), err)
+			}
+		}
+	}
+	return nil
+}
+
+// PullSecretUser is implemented by addons whose images come from a registry
+// that needs the stored pull secret inside the cluster.
+type PullSecretUser interface {
+	NeedsPullSecret() bool
+}
+
+// NeedPullSecret reports whether any addon needs the stored pull secret
+// mounted into the cluster.
+func NeedPullSecret(list []Addon) bool {
+	for _, a := range list {
+		if u, ok := a.(PullSecretUser); ok && u.NeedsPullSecret() {
+			return true
+		}
+	}
+	return false
+}
+
+// Noted is implemented by addons with a requirement worth showing wherever
+// addons are listed.
+type Noted interface {
+	Note() string
+}
+
+// VersionChoice is a version an addon offers for an interactive install.
+type VersionChoice struct {
+	Version string
+	Hint    string
+	Default bool
+}
+
+// Versioned is implemented by addons whose installable versions come from a
+// remote catalogue, so an interactive install can offer them.
+type Versioned interface {
+	Versions(ctx context.Context) ([]VersionChoice, error)
+}
+
+// Alternative is implemented by an addon that installs the same component as
+// another one from a different source. The two cannot be combined, and option
+// flags named for the other addon configure this one when it is requested.
+type Alternative interface {
+	AlternativeTo() string
+}
+
 var registry = map[string]Addon{}
 
 // optionsSet tracks non-version options applied via Configure this
 // invocation, so resolution can reject options whose addon is outside the
 // requested set and installs can re-run a ready addon to apply them.
-var optionsSet = map[string]map[string]bool{}
+var optionsSet = map[string]map[string]string{}
 
 // HasOptions reports whether non-version options were applied to an addon.
 func HasOptions(name string) bool { return len(optionsSet[name]) > 0 }
@@ -101,13 +173,34 @@ func Configure(name string, opts map[string]string) {
 				if k == "version" {
 					continue
 				}
-				if optionsSet[name] == nil {
-					optionsSet[name] = map[string]bool{}
+				// an empty value unsets the option
+				if opts[k] == "" {
+					delete(optionsSet[name], k)
+					continue
 				}
-				optionsSet[name][k] = true
+				if optionsSet[name] == nil {
+					optionsSet[name] = map[string]string{}
+				}
+				optionsSet[name][k] = opts[k]
 			}
 		}
 	}
+}
+
+// alternativeConflict explains why an addon and its alternative cannot both
+// be in the closure, naming whatever pulled the replaced addon in.
+func alternativeConflict(name, replaced string, closure []string) error {
+	msg := fmt.Sprintf("addons %s and %s cannot be installed together: %s replaces %s", name, replaced, name, replaced)
+	var requirers []string
+	for _, n := range closure {
+		if slices.Contains(registry[n].Dependencies(), replaced) {
+			requirers = append(requirers, n)
+		}
+	}
+	if len(requirers) > 0 {
+		msg += fmt.Sprintf(" (%s requires %s)", strings.Join(requirers, ", "), replaced)
+	}
+	return errors.New(msg)
 }
 
 // ParseAddonSpec splits "name@version" into name + options.
@@ -171,6 +264,28 @@ func Resolve(specs []string) ([]Addon, error) {
 	for _, n := range names {
 		if err := collect(n); err != nil {
 			return nil, err
+		}
+	}
+
+	// an alternative replaces another addon: reject the pair, and hand the
+	// alternative the options set through the replaced addon's flags
+	closure := make([]string, 0, len(needed))
+	for n := range needed {
+		closure = append(closure, n)
+	}
+	sort.Strings(closure)
+	for _, name := range closure {
+		alt, ok := registry[name].(Alternative)
+		if !ok {
+			continue
+		}
+		replaced := alt.AlternativeTo()
+		if needed[replaced] {
+			return nil, alternativeConflict(name, replaced, closure)
+		}
+		if opts := optionsSet[replaced]; len(opts) > 0 {
+			delete(optionsSet, replaced)
+			Configure(name, opts)
 		}
 	}
 

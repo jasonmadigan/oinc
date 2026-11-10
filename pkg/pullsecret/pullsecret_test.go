@@ -60,3 +60,28 @@ func TestRejectMalformedSecretsWithoutDisclosure(t *testing.T) {
 		}
 	}
 }
+
+func TestPathForRequiresCredentialsForTheRegistry(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OINC_CONFIG_DIR", dir)
+
+	if _, err := PathFor("registry.redhat.io"); err == nil || !strings.Contains(err.Error(), "pull-secret set") {
+		t.Fatalf("missing secret: err = %v, want a hint to run pull-secret set", err)
+	}
+
+	stored := filepath.Join(dir, "pull-secret.json")
+	if err := os.WriteFile(stored, []byte(`{"auths":{"quay.io":{"auth":"dXNlcjpwYXNzd29yZA=="}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PathFor("registry.redhat.io"); err == nil || !strings.Contains(err.Error(), "registry.redhat.io") {
+		t.Fatalf("secret without the registry: err = %v, want it to name registry.redhat.io", err)
+	}
+
+	path, err := PathFor("quay.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != stored {
+		t.Errorf("path = %q, want %q", path, stored)
+	}
+}

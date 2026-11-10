@@ -13,6 +13,7 @@ The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. A
 | `metallb` | 0.14.9 | upstream manifests | none |
 | `istio` | 1.29.0 (sail) | helm (sail operator) | none |
 | `kuadrant` | 1.4.1 | helm | gateway-api, cert-manager, metallb, istio |
+| `rhcl` | head of `stable` | OLM (Red Hat operator index) | gateway-api, cert-manager, metallb, istio |
 | `rhdh` | 6.2.2 (chart) | helm | none |
 | `mcp-gateway` | 0.8.0 | helm (OCI) | kuadrant |
 
@@ -105,13 +106,68 @@ The overlay is passed to helm after the addon's base values, so it wins on confl
 - Postgres persistence is off (emptyDir) with a 2Gi ephemeral-storage limit; the chart default limit of 20Mi assumes a PVC and would evict the pod.
 - The Route is created with TLS disabled and an explicit host on the cluster ingress hostname, and the app's `baseUrl`/CORS origin are set to the externally mapped URL (RHDH bakes its external URL into app config).
 
-## Instance options
+## RHCL
 
-By default the kuadrant, metallb and gateway-api addons install operators and CRDs but no instances beyond a bare `Kuadrant` CR. Opt-in flags (on `oinc create` and `oinc addon install`) make oinc create the instances a working cluster needs:
+The `rhcl` addon installs Red Hat Connectivity Link, the downstream build of Kuadrant, through OLM from a Red Hat operator index. It is an alternative to `kuadrant`: same dependencies, same `kuadrant-system` namespace and operator deployment, so the two cannot be combined, in one request or on one cluster. `mcp-gateway` requires `kuadrant`, so it cannot be combined with `rhcl` either.
+
+RHCL versions are not Kuadrant versions: RHCL 1.4 is built from kuadrant-operator `release-1.5`.
+
+```bash
+oinc pull-secret set ~/Downloads/pull-secret.json
+oinc create --version ocp-4.23 --addons rhcl@1.4.3
+```
+
+### Versions and channels
+
+| Spec | Installs | Channel |
+|-|-|-|
+| `rhcl@x.y.z` | `rhcl-operator.vx.y.z` | `stable-x.y`, or `stable` for versions published before minor channels (up to 1.4.2) |
+| `rhcl` | head of `stable` | `stable` |
+
+`stable` ends at 1.4.3. Later versions ship only on their minor channel, so pin them: `rhcl@1.5.0`.
+
+Pre-flight looks the version up in the Red Hat catalog API (`catalog.redhat.com/api/containers/v1/operators/bundles`), and the install uses the newest `redhat-operator-index` that carries it on that channel. The index need not match the cluster: 1.4.3 on a 4.23 cluster installs from the v4.22 index.
+
+`--rhcl-index <image>` installs from that index and skips the lookup, for when the API is unreachable or the index is not one it describes. Without the catalog, `rhcl@x.y.z` maps to `stable-x.y` and bare `rhcl` follows the head of `stable`. A version that index lacks fails once its catalog is up, with OLM's reason.
+
+### Install plans
+
+The Subscription pins `startingCSV` with manual approval, and oinc approves only the InstallPlan that carries the requested CSV. The bundle pins its dependencies exactly (1.4.3: authorino-operator 1.4.3, limitador-operator 1.4.2, dns-operator 1.4.2), so that plan is deterministic. Plans for later versions are left unapproved: after `rhcl@1.4.3`, the 1.4.4 plan stays in `RequiresApproval`.
+
+oinc does not change an installed version. Asking for another one fails in pre-flight: recreate the cluster, or approve the pending plan yourself.
+
+### Pull secret
+
+RHCL images come from `registry.redhat.io`, so the stored pull secret needs credentials for it and the cluster needs it mounted at `/etc/crio/openshift-pull-secret`:
+
+- `ocp-4.23` always mounts it.
+- OKD versions mount it, read-only, only when `rhcl` is in `--addons` at create time. Their CRI-O reads the same path. Other OKD clusters still get no Red Hat credentials.
+
+`oinc addon install rhcl` on a cluster created without the mount fails in pre-flight. Recreate it with `rhcl` in `--addons`.
+
+### Console plugin
+
+`--rhcl-console-plugin` has the operator deploy its console plugin and loads it into the Console.
+
+The operator deploys the plugin only where a `ClusterVersion` is served, which MicroShift lacks. The addon therefore applies the `ClusterVersion` and `ClusterOperator` CRDs from `openshift/api` and creates a `ClusterVersion` named `version` that reports the cluster's OpenShift minor (`4.22.0` on OKD 4.22), from which the operator picks the plugin build. It does so before the operator first starts. Where RHCL is already running it restarts the operator once, as the operator only looks when it starts. `ClusterOperator` is there for OLM, which reports to it as soon as the `config.openshift.io` group is served and logs errors if it cannot.
+
+oinc's Console runs outside the cluster, so it reaches the plugin the way `oinc console sync-plugin-proxy` reaches plugin backends: a shadow LoadBalancer Service for the plugin's Service, a NetworkPolicy admitting traffic to those pods from outside the cluster (the operator admits only the in-cluster Console), the service CA and a host entry. The Console is restarted with the plugin's assets and proxies added to the settings it already had. The host entry holds the cluster container's address: if that changes, run the install again to refresh it.
+
+### Options
 
 | Flag | Effect |
 |-|-|
-| `--kuadrant-devportal` | sets `spec.components.developerPortal.enabled: true` on the `Kuadrant` CR (created with it, or merge-patched onto an existing CR), then waits for `deployment/developer-portal-controller` in `kuadrant-system` to be Available |
+| `--rhcl-index IMAGE` | operator index to install from, skipping the catalog lookup |
+| `--rhcl-console-plugin` | have the operator deploy its console plugin, by giving the cluster a `ClusterVersion`, and load it into the Console |
+| `--kuadrant-devportal` | as for `kuadrant`, see [instance options](#instance-options) |
+
+## Instance options
+
+By default the kuadrant, rhcl, metallb and gateway-api addons install operators and CRDs but no instances beyond a bare `Kuadrant` CR. Opt-in flags (on `oinc create` and `oinc addon install`) make oinc create the instances a working cluster needs:
+
+| Flag | Effect |
+|-|-|
+| `--kuadrant-devportal` | with `kuadrant` or `rhcl`: sets `spec.components.developerPortal.enabled: true` on the `Kuadrant` CR (created with it, or merge-patched onto an existing CR), then waits for `deployment/developer-portal-controller` in `kuadrant-system` to be Available |
 | `--metallb-address-pool VALUE` | creates an `IPAddressPool` (`oinc-pool`) and `L2Advertisement` (`oinc-l2`) in `metallb-system` once the controller is up. `auto` derives an `x.y.z.200-x.y.z.220` range from the cluster container's network subnet; an explicit range (`start-end`) or CIDR is used as given, validated at pre-flight |
 | `--gateway-api-gateway` | creates a `Gateway` named `kuadrant-ingressgateway` (istio class, http/80, routes from all namespaces) in `gateway-system` and waits for it to be Programmed with an address |
 
@@ -157,7 +213,7 @@ To retain a cluster, save the affected Gateway manifests and add the infrastruct
 
 ## OLM compatibility
 
-OINC includes OLM but installs most addons through manifests or Helm. `kuadrant@latest` uses the `quay.io/kuadrant/kuadrant-operator-catalog:latest` catalogue; pinned Kuadrant releases use Helm. Validate catalogue format support, registry authentication and operator installation for the selected artifacts and MicroShift build. The presence of OLM alone does not establish those properties.
+OINC includes OLM but installs most addons through manifests or Helm. `kuadrant@latest` uses the `quay.io/kuadrant/kuadrant-operator-catalog:latest` catalogue; pinned Kuadrant releases use Helm. `rhcl` installs from a Red Hat operator index with manual InstallPlan approval, see [RHCL](#rhcl). Validate catalogue format support, registry authentication and operator installation for the selected artifacts and MicroShift build. The presence of OLM alone does not establish those properties.
 
 ## Version pinning
 
@@ -198,6 +254,7 @@ Dependencies are declared per-addon and resolved via topological sort (Kahn's al
        Validate() error
    }
    ```
+   Further optional hooks in `pkg/addons/addon.go`: `ClusterValidator` (check the running cluster before anything is installed), `Alternative` (takes the place of another addon), `PullSecretUser` (mount the pull secret at create), `Versioned` (version step in the picker) and `Noted` (hint in listings).
 4. Register in `init()`: `func init() { Register(&myAddon{}) }`
 5. Add detection in `pkg/oinc/status.go` `addonChecks` for status display
 6. Download through `applyManifestURL`, `download.URL` or `pullChart` so the addon gets [download retries](#download-retries); never pass a URL straight to curl or helm

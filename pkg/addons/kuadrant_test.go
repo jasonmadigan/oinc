@@ -383,12 +383,12 @@ func TestWaitForKuadrantReadyWatchdog(t *testing.T) {
 // defaults unchanged: without the option the CR must stay metadata-only,
 // byte-identical to what previous releases created.
 func TestKuadrantCR(t *testing.T) {
-	bare := (&kuadrant{}).kuadrantCR()
+	bare := kuadrantCR(false)
 	if _, found, _ := unstructured.NestedMap(bare.Object, "spec"); found {
 		t.Errorf("bare CR must carry no spec, got %v", bare.Object["spec"])
 	}
 
-	portal := (&kuadrant{devportal: true}).kuadrantCR()
+	portal := kuadrantCR(true)
 	enabled, found, _ := unstructured.NestedBool(portal.Object, "spec", "components", "developerPortal", "enabled")
 	if !found || !enabled {
 		t.Errorf("devportal CR spec = %v, want components.developerPortal.enabled true", portal.Object["spec"])

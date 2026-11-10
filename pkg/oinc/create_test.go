@@ -2,6 +2,7 @@ package oinc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -146,7 +147,7 @@ func TestPreviewMountsPullSecretReadOnlyAndOKDDoesNot(t *testing.T) {
 			t.Fatal(err)
 		}
 		opts := runtime.ContainerOpts{}
-		if err := configurePullSecret(&opts, ver); err != nil {
+		if err := configurePullSecret(&opts, ver, false); err != nil {
 			t.Fatal(err)
 		}
 		if selector == "5.0" && len(opts.Volumes) != 0 {
@@ -155,5 +156,120 @@ func TestPreviewMountsPullSecretReadOnlyAndOKDDoesNot(t *testing.T) {
 		if selector == "ocp-4.23" && (len(opts.Volumes) != 1 || opts.Volumes[0] != filepath.Join(dir, "pull-secret.json")+":/etc/crio/openshift-pull-secret:ro") {
 			t.Fatalf("wrong auth mount: %v", opts.Volumes)
 		}
+	}
+}
+
+// OKD only receives the stored credentials when an addon in the request
+// pulls from an authenticated registry, and then needs none for quay.io.
+func TestOKDMountsPullSecretForAnAddonThatNeedsIt(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OINC_CONFIG_DIR", dir)
+	ver, err := version.Resolve("4.22")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opts := runtime.ContainerOpts{}
+	if err := configurePullSecret(&opts, ver, true); err == nil || !strings.Contains(err.Error(), "pull-secret set") {
+		t.Fatalf("no stored secret: err = %v, want a hint to run pull-secret set", err)
+	}
+
+	stored := filepath.Join(dir, "pull-secret.json")
+	if err := os.WriteFile(stored, []byte(`{"auths":{"registry.redhat.io":{"auth":"dummy"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	opts = runtime.ContainerOpts{}
+	if err := configurePullSecret(&opts, ver, true); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{stored + ":/etc/crio/openshift-pull-secret:ro"}; len(opts.Volumes) != 1 || opts.Volumes[0] != want[0] {
+		t.Fatalf("volumes = %v, want %v", opts.Volumes, want)
+	}
+}
+
+type recordingAddon struct {
+	name       string
+	clusterErr error
+	installed  *[]string
+}
+
+func (a *recordingAddon) Name() string           { return a.name }
+func (a *recordingAddon) Dependencies() []string { return nil }
+func (a *recordingAddon) Install(context.Context, *addons.Config) error {
+	*a.installed = append(*a.installed, a.name)
+	return nil
+}
+func (a *recordingAddon) Ready(context.Context, *addons.Config) error { return nil }
+func (a *recordingAddon) ValidateCluster(context.Context, *addons.Config) error {
+	return a.clusterErr
+}
+
+// a cluster that one addon cannot work on must stop the whole request before
+// anything is installed, not after its dependencies have gone in.
+func TestInstallAddonsChecksTheClusterBeforeInstallingAnything(t *testing.T) {
+	var installed []string
+	list := []addons.Addon{
+		&recordingAddon{name: "dependency", installed: &installed},
+		&recordingAddon{name: "picky", installed: &installed, clusterErr: errors.New("cluster has no pull secret")},
+	}
+	cfg := &addons.Config{Logger: slog.New(slog.NewTextHandler(devNull{}, nil))}
+
+	err := installAddons(context.Background(), list, cfg)
+	if err == nil || !strings.Contains(err.Error(), "picky") || !strings.Contains(err.Error(), "cluster has no pull secret") {
+		t.Fatalf("err = %v, want the picky addon's objection", err)
+	}
+	if len(installed) != 0 {
+		t.Errorf("installed %v before the cluster check failed, want nothing", installed)
+	}
+
+	list[1].(*recordingAddon).clusterErr = nil
+	if err := installAddons(context.Background(), list, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"dependency", "picky"}; len(installed) != 2 || installed[0] != want[0] || installed[1] != want[1] {
+		t.Errorf("installed = %v, want %v", installed, want)
+	}
+}
+
+// requesting rhcl is what gives an OKD cluster the stored credentials; the
+// same cluster without it gets none.
+func TestClusterContainerMountsPullSecretOnlyWhenRHCLIsRequested(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OINC_CONFIG_DIR", dir)
+	stored := filepath.Join(dir, "pull-secret.json")
+	if err := os.WriteFile(stored, []byte(`{"auths":{"registry.redhat.io":{"auth":"dummy"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ver, err := version.Resolve("4.22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := CreateOpts{HTTPPort: 9080, HTTPSPort: 9443}
+
+	withRHCL, err := addons.Resolve([]string{"rhcl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copts, err := clusterContainerOpts(opts, ver, withRHCL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := stored + ":/etc/crio/openshift-pull-secret:ro"; len(copts.Volumes) != 1 || copts.Volumes[0] != want {
+		t.Errorf("volumes with rhcl = %v, want [%s]", copts.Volumes, want)
+	}
+
+	withoutRHCL, err := addons.Resolve([]string{"cert-manager"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copts, err = clusterContainerOpts(opts, ver, withoutRHCL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copts.Volumes) != 0 {
+		t.Errorf("volumes without rhcl = %v, want none", copts.Volumes)
+	}
+	if copts.Name != "oinc" || !copts.Privileged || len(copts.Ports) != 3 {
+		t.Errorf("container opts = %+v, want the privileged oinc container with its three ports", copts)
 	}
 }

@@ -150,13 +150,19 @@ func validate(data []byte) error {
 	return nil
 }
 
-// RequiredPath validates the credentials needed by Red Hat preview components.
-func RequiredPath() (string, error) {
+// PathFor returns the stored pull secret's path once it is known to hold
+// credentials for registry.
+func PathFor(registry string) (string, error) {
 	if _, err := Load(); err != nil {
 		return "", err
 	}
-	if !HasRegistry("quay.io") {
-		return "", fmt.Errorf("pull secret has no quay.io credentials; run oinc pull-secret set <path>")
+	if !HasRegistry(registry) {
+		return "", fmt.Errorf("pull secret has no %s credentials; run oinc pull-secret set <path>", registry)
 	}
 	return Path()
+}
+
+// RequiredPath validates the credentials needed by Red Hat preview components.
+func RequiredPath() (string, error) {
+	return PathFor("quay.io")
 }

@@ -172,7 +172,7 @@ func TestConfigure(t *testing.T) {
 	}
 	defer func() {
 		registry = orig
-		optionsSet = map[string]map[string]bool{}
+		optionsSet = map[string]map[string]string{}
 	}()
 
 	registry = map[string]Addon{}
@@ -223,7 +223,7 @@ func resetOptions(t *testing.T, opts map[string]map[string]string) {
 				c.SetOptions(o)
 			}
 		}
-		optionsSet = map[string]map[string]bool{}
+		optionsSet = map[string]map[string]string{}
 	})
 }
 
@@ -280,5 +280,173 @@ func TestConfigureVersionOnlyIsNotTracked(t *testing.T) {
 	}
 	if AnyOptions() {
 		t.Error("AnyOptions must stay false for version-only configuration")
+	}
+}
+
+type fakeAlternativeAddon struct {
+	fakeConfigurableAddon
+	alternativeTo string
+}
+
+func (f *fakeAlternativeAddon) AlternativeTo() string { return f.alternativeTo }
+
+// alternativeRegistry swaps in a registry where "downstream" is an
+// alternative to "upstream", which "dependent" requires.
+func alternativeRegistry(t *testing.T) (upstream *fakeConfigurableAddon, downstream *fakeAlternativeAddon) {
+	t.Helper()
+	orig := registry
+	t.Cleanup(func() {
+		registry = orig
+		optionsSet = map[string]map[string]string{}
+	})
+
+	registry = map[string]Addon{}
+	upstream = &fakeConfigurableAddon{fakeAddon: fakeAddon{name: "upstream"}}
+	downstream = &fakeAlternativeAddon{
+		fakeConfigurableAddon: fakeConfigurableAddon{fakeAddon: fakeAddon{name: "downstream"}},
+		alternativeTo:         "upstream",
+	}
+	Register(upstream)
+	Register(downstream)
+	Register(&fakeAddon{name: "dependent", deps: []string{"upstream"}})
+	return upstream, downstream
+}
+
+func TestResolveRejectsAnAddonWithItsAlternative(t *testing.T) {
+	alternativeRegistry(t)
+
+	_, err := Resolve([]string{"upstream", "downstream"})
+	if err == nil {
+		t.Fatal("want an error when an addon and its alternative are both requested")
+	}
+	for _, want := range []string{"upstream", "downstream", "cannot be installed together"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// the conflicting addon may only be there as a dependency; the error has to
+// say what pulled it in or the user cannot tell what to drop.
+func TestResolveNamesWhatRequiresTheConflictingAddon(t *testing.T) {
+	alternativeRegistry(t)
+
+	_, err := Resolve([]string{"downstream", "dependent"})
+	if err == nil {
+		t.Fatal("want an error when a dependency pulls in the addon an alternative replaces")
+	}
+	if !strings.Contains(err.Error(), "dependent requires") {
+		t.Errorf("error %q does not say that dependent requires upstream", err)
+	}
+}
+
+// flags are named for the original addon, so they must reach its alternative
+// when that is what gets installed.
+func TestResolveGivesAnAlternativeTheOptionsOfTheAddonItReplaces(t *testing.T) {
+	_, downstream := alternativeRegistry(t)
+	Configure("upstream", map[string]string{"portal": "true"})
+
+	if _, err := Resolve([]string{"downstream"}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if downstream.opts["portal"] != "true" {
+		t.Errorf("downstream options = %v, want portal=true from the upstream flag", downstream.opts)
+	}
+	if !HasOptions("downstream") {
+		t.Error("downstream must count as having options, so a ready install is re-run to apply them")
+	}
+
+	// installs resolve again after pre-flight; the options must survive it
+	if _, err := Resolve([]string{"downstream"}); err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	if !HasOptions("downstream") {
+		t.Error("downstream lost its options on the second resolve")
+	}
+}
+
+func TestResolveKeepsOptionsOnTheOriginalAddonWhenItIsRequested(t *testing.T) {
+	upstream, downstream := alternativeRegistry(t)
+	Configure("upstream", map[string]string{"portal": "true"})
+
+	if _, err := Resolve([]string{"upstream"}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if upstream.opts["portal"] != "true" {
+		t.Errorf("upstream options = %v, want portal=true", upstream.opts)
+	}
+	if len(downstream.opts) != 0 {
+		t.Errorf("downstream options = %v, want none when it is not requested", downstream.opts)
+	}
+}
+
+type fakeClusterAddon struct {
+	fakeAddon
+	clusterErr error
+	sawConfig  *Config
+	pullSecret bool
+}
+
+func (f *fakeClusterAddon) ValidateCluster(_ context.Context, cfg *Config) error {
+	f.sawConfig = cfg
+	return f.clusterErr
+}
+
+func (f *fakeClusterAddon) NeedsPullSecret() bool { return f.pullSecret }
+
+// a cluster the addon cannot work on must be reported before any addon in the
+// list is installed, naming the addon that objected.
+func TestValidateClusterNamesTheAddonThatRejectsTheCluster(t *testing.T) {
+	fine := &fakeClusterAddon{fakeAddon: fakeAddon{name: "fine"}}
+	picky := &fakeClusterAddon{fakeAddon: fakeAddon{name: "picky"}, clusterErr: errors.New("no pull secret mounted")}
+	cfg := &Config{Container: "oinc"}
+
+	err := ValidateCluster(context.Background(), []Addon{&fakeAddon{name: "plain"}, fine, picky}, cfg)
+	if err == nil {
+		t.Fatal("want the picky addon's error")
+	}
+	for _, want := range []string{"picky", "no pull secret mounted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	if fine.sawConfig != cfg {
+		t.Error("addons must be handed the cluster config to inspect")
+	}
+
+	if err := ValidateCluster(context.Background(), []Addon{&fakeAddon{name: "plain"}, fine}, cfg); err != nil {
+		t.Errorf("want nil when no addon objects, got %v", err)
+	}
+}
+
+func TestNeedPullSecret(t *testing.T) {
+	plain := &fakeAddon{name: "plain"}
+	public := &fakeClusterAddon{fakeAddon: fakeAddon{name: "public"}}
+	private := &fakeClusterAddon{fakeAddon: fakeAddon{name: "private"}, pullSecret: true}
+
+	if NeedPullSecret([]Addon{plain, public}) {
+		t.Error("no addon in the list pulls from an authenticated registry")
+	}
+	if !NeedPullSecret([]Addon{plain, public, private}) {
+		t.Error("one addon in the list needs the pull secret in the cluster")
+	}
+}
+
+// an empty value unsets an option: it must stop counting as set, or a
+// cleared flag would still be rejected as belonging to an unrequested addon.
+func TestConfigureWithAnEmptyValueUnsetsTheOption(t *testing.T) {
+	resetOptions(t, map[string]map[string]string{
+		"metallb": {"address-pool": ""},
+	})
+	Configure("metallb", map[string]string{"address-pool": "auto"})
+	Configure("metallb", map[string]string{"address-pool": ""})
+
+	if HasOptions("metallb") {
+		t.Error("an option cleared with an empty value still counts as set")
+	}
+	if _, err := Resolve([]string{"cert-manager"}); err != nil {
+		t.Errorf("Resolve after clearing the option = %v, want nil", err)
 	}
 }
