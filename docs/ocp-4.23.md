@@ -20,6 +20,8 @@ The secret must contain `quay.io` credentials. It is stored with mode `0600` und
 
 OINC mounts the secret read-only at `/etc/crio/openshift-pull-secret` before MicroShift starts. The host Console pull uses a temporary Docker configuration preserving the selected context, or Podman's `--authfile`. Credentials are not baked into the image and the host's registry login configuration is not modified. Image signature policy is unchanged.
 
+OKD versions get the same mount only when the `rhcl` addon is requested at create time. See [RHCL pull secret](addons.md#pull-secret).
+
 `oinc pull-secret remove` removes the local copy. Recreate the cluster after replacing or removing a secret: an existing bind mount retains its original file. This does not revoke the underlying registry credentials.
 
 ## Build inputs
