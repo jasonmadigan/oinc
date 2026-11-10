@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -139,5 +140,65 @@ func TestCreateContainerConfiguresPodmanForNestedContainers(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "\n--tmpfs=/var/lib/containers\n") {
 		t.Fatalf("podman arguments did not isolate nested container storage:\n%s", args)
+	}
+}
+
+// trimmed from docker inspect of an oinc-console container on macOS
+const consoleInspect = `[{
+  "State": {"Running": true, "StartedAt": "2026-11-10T11:00:00.5Z"},
+  "Config": {
+    "Image": "quay.io/okd/scos-content@sha256:923f",
+    "Env": [
+      "BRIDGE_PLUGINS=my-plugin=http://host.docker.internal:9001",
+      "BRIDGE_BRANDING=okd",
+      "BRIDGE_K8S_AUTH_BEARER_TOKEN=abc=def==",
+      "PATH=/usr/local/bin:/usr/bin",
+      "MALFORMED"
+    ]
+  },
+  "HostConfig": {
+    "Binds": ["/Users/me/Library/Caches/oinc/service-ca.crt:/var/run/oinc/service-ca.crt:ro"],
+    "ExtraHosts": ["plugin.ns.svc:192.168.97.200", "v6.ns.svc:fd00::1"]
+  },
+  "NetworkSettings": {"Ports": {"9000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "9000"}]}}
+}]`
+
+// recreating a container with one setting changed needs the rest read back
+// exactly, including values that themselves contain separators.
+func TestContainerInfoReadsBackCreationSettings(t *testing.T) {
+	info, err := containerInfoFromInspect([]byte(consoleInspect))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantEnv := map[string]string{
+		"BRIDGE_PLUGINS":               "my-plugin=http://host.docker.internal:9001",
+		"BRIDGE_BRANDING":              "okd",
+		"BRIDGE_K8S_AUTH_BEARER_TOKEN": "abc=def==",
+		"PATH":                         "/usr/local/bin:/usr/bin",
+	}
+	if !reflect.DeepEqual(info.Env, wantEnv) {
+		t.Errorf("Env = %v, want %v", info.Env, wantEnv)
+	}
+	wantBinds := []string{"/Users/me/Library/Caches/oinc/service-ca.crt:/var/run/oinc/service-ca.crt:ro"}
+	if !reflect.DeepEqual(info.Binds, wantBinds) {
+		t.Errorf("Binds = %v, want %v", info.Binds, wantBinds)
+	}
+	wantHosts := map[string]string{"plugin.ns.svc": "192.168.97.200", "v6.ns.svc": "fd00::1"}
+	if !reflect.DeepEqual(info.ExtraHosts, wantHosts) {
+		t.Errorf("ExtraHosts = %v, want %v", info.ExtraHosts, wantHosts)
+	}
+	if !info.Running || info.Image != "quay.io/okd/scos-content@sha256:923f" || info.Ports[9000] != 9000 {
+		t.Errorf("info = %+v, want the running state, image and port mapping kept", info)
+	}
+}
+
+func TestContainerInfoWithoutOptionalSettings(t *testing.T) {
+	info, err := containerInfoFromInspect([]byte(`[{"State": {"Running": false}, "Config": {"Image": "x"}, "HostConfig": {"Binds": null, "ExtraHosts": null}}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Env) != 0 || len(info.Binds) != 0 || len(info.ExtraHosts) != 0 {
+		t.Errorf("info = %+v, want no env, binds or hosts", info)
 	}
 }

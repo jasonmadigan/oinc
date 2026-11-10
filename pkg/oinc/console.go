@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -308,13 +310,9 @@ func startConsoleContainer(rt *runtime.Runtime, ver version.OCPVersion, token st
 		"BRIDGE_USER_SETTINGS_LOCATION":               "localstorage",
 	}
 
-	if console.Plugin != "" {
-		resolved := resolvePluginURL(console.Plugin, rt.ContainerHostAddress())
-		parts := strings.SplitN(resolved, "=", 2)
-		if len(parts) == 2 {
-			env["BRIDGE_PLUGINS"] = resolved
-			env["BRIDGE_I18N_NAMESPACES"] = fmt.Sprintf("plugin__%s", parts[0])
-		}
+	if plugins, namespaces := bridgePluginEnv(console.Plugin, rt.ContainerHostAddress()); plugins != "" {
+		env["BRIDGE_PLUGINS"] = plugins
+		env["BRIDGE_I18N_NAMESPACES"] = namespaces
 	}
 	if proxyOptions != nil {
 		env["BRIDGE_PLUGIN_PROXY"] = proxyOptions.config
@@ -421,21 +419,106 @@ func buildConsoleProxyOptionsWithCAWriter(ctx context.Context, client kubernetes
 	if err != nil {
 		return nil, fmt.Errorf("getting ConsolePlugin %s: %w", pluginName, err)
 	}
-	proxyEntries, found, err := unstructured.NestedSlice(plugin.Object, "spec", "proxy")
-	if err != nil {
-		return nil, fmt.Errorf("reading ConsolePlugin proxies: %w", err)
+	exposure := newConsoleExposure(ctx, client, pluginName, logger)
+	if err := exposure.proxies(plugin); err != nil {
+		return nil, err
 	}
-	if !found {
-		proxyEntries = []any{}
-	}
+	return exposure.options(writeCA)
+}
 
-	result := &consoleProxyOptions{extraHosts: map[string]string{}}
-	proxyConfig := bridgePluginProxy{Services: []bridgePluginProxyService{}}
-	caBundles := map[string]struct{}{}
+// inClusterConsolePluginWithCAWriter makes a plugin that an operator serves
+// inside the cluster reachable from the standalone Console, and returns the
+// URL of its assets with the proxy settings the Console needs.
+func inClusterConsolePluginWithCAWriter(ctx context.Context, client kubernetes.Interface, dynClient dynamic.Interface, pluginName string, logger *slog.Logger, writeCA func(map[string]struct{}) (string, error)) (string, *consoleProxyOptions, error) {
+	plugin, err := dynClient.Resource(consolePluginGVR).Get(ctx, pluginName, metav1.GetOptions{})
+	if err != nil {
+		return "", nil, fmt.Errorf("getting ConsolePlugin %s: %w", pluginName, err)
+	}
+	exposure := newConsoleExposure(ctx, client, pluginName, logger)
+	// proxies first, so a Service that also serves the assets keeps the
+	// shadow sync-plugin-proxy would give it
+	if err := exposure.proxies(plugin); err != nil {
+		return "", nil, err
+	}
+	assets, err := exposure.backend(plugin)
+	if err != nil {
+		return "", nil, err
+	}
+	options, err := exposure.options(writeCA)
+	if err != nil {
+		return "", nil, err
+	}
+	return assets, options, nil
+}
+
+// consoleExposure collects what the standalone Console needs to reach a
+// plugin's Services inside the cluster.
+type consoleExposure struct {
+	ctx        context.Context
+	client     kubernetes.Interface
+	pluginName string
+	logger     *slog.Logger
+
+	services []bridgePluginProxyService
+	// service host -> LoadBalancer address
+	hosts map[string]string
+	// namespace/service:port that already has a LoadBalancer. the node
+	// offers one address, so two shadows cannot hold the same port
+	exposed   map[string]bool
+	caBundles map[string]struct{}
+}
+
+func newConsoleExposure(ctx context.Context, client kubernetes.Interface, pluginName string, logger *slog.Logger) *consoleExposure {
+	return &consoleExposure{
+		ctx:        ctx,
+		client:     client,
+		pluginName: pluginName,
+		logger:     logger,
+		services:   []bridgePluginProxyService{},
+		hosts:      map[string]string{},
+		exposed:    map[string]bool{},
+		caBundles:  map[string]struct{}{},
+	}
+}
+
+// expose gives a Service a shadow LoadBalancer and returns the host name the
+// Console reaches it by.
+func (e *consoleExposure) expose(alias, namespace, serviceName string, port int32) (string, error) {
+	host := fmt.Sprintf("%s.%s.svc", serviceName, namespace)
+	key := fmt.Sprintf("%s/%s:%d", namespace, serviceName, port)
+	if e.exposed[key] {
+		return host, nil
+	}
+	address, err := ensureConsoleProxyLoadBalancer(e.ctx, e.client, e.pluginName, alias, namespace, serviceName, port, e.logger)
+	if err != nil {
+		return "", err
+	}
+	e.exposed[key] = true
+	e.hosts[host] = address
+	return host, nil
+}
+
+func (e *consoleExposure) trustServiceCA(namespace string) error {
+	caConfigMap, err := e.client.CoreV1().ConfigMaps(namespace).Get(e.ctx, "openshift-service-ca.crt", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting service CA in namespace %s: %w", namespace, err)
+	}
+	if ca := caConfigMap.Data["service-ca.crt"]; ca != "" {
+		e.caBundles[ca] = struct{}{}
+	}
+	return nil
+}
+
+// proxies exposes the Services behind the plugin's proxy entries.
+func (e *consoleExposure) proxies(plugin *unstructured.Unstructured) error {
+	proxyEntries, _, err := unstructured.NestedSlice(plugin.Object, "spec", "proxy")
+	if err != nil {
+		return fmt.Errorf("reading ConsolePlugin proxies: %w", err)
+	}
 	for _, rawEntry := range proxyEntries {
 		entry, ok := rawEntry.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("ConsolePlugin %s has an invalid proxy entry", pluginName)
+			return fmt.Errorf("ConsolePlugin %s has an invalid proxy entry", e.pluginName)
 		}
 		alias, _, _ := unstructured.NestedString(entry, "alias")
 		authorization, _, _ := unstructured.NestedString(entry, "authorization")
@@ -444,46 +527,108 @@ func buildConsoleProxyOptionsWithCAWriter(ctx context.Context, client kubernetes
 		namespace, _, _ := unstructured.NestedString(entry, "endpoint", "service", "namespace")
 		port, _, _ := unstructured.NestedInt64(entry, "endpoint", "service", "port")
 		if endpointType != "Service" || alias == "" || serviceName == "" || namespace == "" || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("ConsolePlugin %s has an incomplete service proxy entry", pluginName)
+			return fmt.Errorf("ConsolePlugin %s has an incomplete service proxy entry", e.pluginName)
 		}
 
-		externalIP, err := ensureConsoleProxyLoadBalancer(ctx, client, pluginName, alias, namespace, serviceName, int32(port), logger)
+		serviceHost, err := e.expose(alias, namespace, serviceName, int32(port))
 		if err != nil {
-			return nil, err
+			return err
 		}
-		serviceHost := fmt.Sprintf("%s.%s.svc", serviceName, namespace)
-		result.extraHosts[serviceHost] = externalIP
 		proxyService := bridgePluginProxyService{
-			ConsoleAPIPath: fmt.Sprintf("/api/proxy/plugin/%s/%s/", pluginName, alias),
+			ConsoleAPIPath: fmt.Sprintf("/api/proxy/plugin/%s/%s/", e.pluginName, alias),
 			Endpoint:       fmt.Sprintf("https://%s:%d/", serviceHost, port),
 			Authorize:      authorization == "UserToken",
 		}
 
 		if customCA, _, _ := unstructured.NestedString(entry, "caCertificate"); customCA != "" {
 			proxyService.CACertificate = customCA
-		} else {
-			caConfigMap, err := client.CoreV1().ConfigMaps(namespace).Get(ctx, "openshift-service-ca.crt", metav1.GetOptions{})
-			if err != nil {
-				return nil, fmt.Errorf("getting service CA in namespace %s: %w", namespace, err)
-			}
-			if ca := caConfigMap.Data["service-ca.crt"]; ca != "" {
-				caBundles[ca] = struct{}{}
-			}
+		} else if err := e.trustServiceCA(namespace); err != nil {
+			return err
 		}
-		proxyConfig.Services = append(proxyConfig.Services, proxyService)
+		e.services = append(e.services, proxyService)
+	}
+	return nil
+}
+
+// backend exposes the Service the plugin's assets are served from and
+// returns their URL.
+func (e *consoleExposure) backend(plugin *unstructured.Unstructured) (string, error) {
+	backendType, _, _ := unstructured.NestedString(plugin.Object, "spec", "backend", "type")
+	serviceName, _, _ := unstructured.NestedString(plugin.Object, "spec", "backend", "service", "name")
+	namespace, _, _ := unstructured.NestedString(plugin.Object, "spec", "backend", "service", "namespace")
+	port, _, _ := unstructured.NestedInt64(plugin.Object, "spec", "backend", "service", "port")
+	basePath, _, _ := unstructured.NestedString(plugin.Object, "spec", "backend", "service", "basePath")
+	if backendType != "Service" || serviceName == "" || namespace == "" || port < 1 || port > 65535 {
+		return "", fmt.Errorf("ConsolePlugin %s has no service backend to load its assets from", e.pluginName)
+	}
+	if basePath == "" {
+		basePath = "/"
 	}
 
-	encodedConfig, err := json.Marshal(proxyConfig)
+	host, err := e.expose("", namespace, serviceName, int32(port))
+	if err != nil {
+		return "", err
+	}
+	if err := e.trustServiceCA(namespace); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("https://%s:%d%s", host, port, basePath), nil
+}
+
+func (e *consoleExposure) options(writeCA func(map[string]struct{}) (string, error)) (*consoleProxyOptions, error) {
+	encodedConfig, err := json.Marshal(bridgePluginProxy{Services: e.services})
 	if err != nil {
 		return nil, fmt.Errorf("encoding Bridge plugin proxy configuration: %w", err)
 	}
-	result.config = string(encodedConfig)
-	if len(caBundles) > 0 {
-		caFile, err := writeCA(caBundles)
+	result := &consoleProxyOptions{config: string(encodedConfig), extraHosts: e.hosts}
+	if len(e.caBundles) > 0 {
+		caFile, err := writeCA(e.caBundles)
 		if err != nil {
 			return nil, err
 		}
 		result.caFile = caFile
+	}
+	return result, nil
+}
+
+// mergeProxyOptions replaces one plugin's proxies in the Console's settings
+// and keeps every other plugin's.
+func mergeProxyOptions(current, added *consoleProxyOptions, pluginName string) (*consoleProxyOptions, error) {
+	if current == nil {
+		return added, nil
+	}
+	var currentConfig, addedConfig bridgePluginProxy
+	if current.config != "" {
+		if err := json.Unmarshal([]byte(current.config), &currentConfig); err != nil {
+			return nil, fmt.Errorf("decoding the Console's plugin proxy configuration: %w", err)
+		}
+	}
+	if err := json.Unmarshal([]byte(added.config), &addedConfig); err != nil {
+		return nil, fmt.Errorf("decoding plugin proxy configuration: %w", err)
+	}
+
+	merged := bridgePluginProxy{Services: []bridgePluginProxyService{}}
+	prefix := fmt.Sprintf("/api/proxy/plugin/%s/", pluginName)
+	for _, service := range currentConfig.Services {
+		if !strings.HasPrefix(service.ConsoleAPIPath, prefix) {
+			merged.Services = append(merged.Services, service)
+		}
+	}
+	merged.Services = append(merged.Services, addedConfig.Services...)
+	encodedConfig, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("encoding Bridge plugin proxy configuration: %w", err)
+	}
+
+	result := &consoleProxyOptions{config: string(encodedConfig), caFile: added.caFile, extraHosts: map[string]string{}}
+	if result.caFile == "" {
+		result.caFile = current.caFile
+	}
+	for host, address := range current.extraHosts {
+		result.extraHosts[host] = address
+	}
+	for host, address := range added.extraHosts {
+		result.extraHosts[host] = address
 	}
 	return result, nil
 }
@@ -541,6 +686,9 @@ func ensureConsoleProxyLoadBalancer(ctx context.Context, client kubernetes.Inter
 	if err != nil {
 		return "", fmt.Errorf("ensuring development proxy LoadBalancer %s/%s: %w", namespace, shadowName, err)
 	}
+	if err := allowConsoleIngress(ctx, client, shadowName, pluginName, namespace, original.Spec.Selector, *servicePort); err != nil {
+		return "", err
+	}
 	logger.Info("waiting for Console proxy LoadBalancer", "service", namespace+"/"+shadowName)
 
 	deadline := time.Now().Add(2 * time.Minute)
@@ -561,6 +709,52 @@ func ensureConsoleProxyLoadBalancer(ctx context.Context, client kubernetes.Inter
 		time.Sleep(time.Second)
 	}
 	return "", fmt.Errorf("development proxy LoadBalancer %s/%s has no address after 2m; install the metallb addon with an address pool", namespace, shadowName)
+}
+
+// allowConsoleIngress admits traffic from outside the cluster to the pods
+// behind a shadow LoadBalancer. Operators let only the in-cluster Console
+// reach their plugin, and the standalone Console runs outside the cluster.
+func allowConsoleIngress(ctx context.Context, client kubernetes.Interface, name, pluginName, namespace string, selector map[string]string, port corev1.ServicePort) error {
+	// an empty selector would open the port on every pod in the namespace
+	if len(selector) == 0 {
+		return nil
+	}
+	protocol := port.Protocol
+	if protocol == "" {
+		protocol = corev1.ProtocolTCP
+	}
+	spec := networkingv1.NetworkPolicySpec{
+		PodSelector: metav1.LabelSelector{MatchLabels: selector},
+		PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+		Ingress: []networkingv1.NetworkPolicyIngressRule{{
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &protocol, Port: &port.TargetPort}},
+		}},
+	}
+
+	policies := client.NetworkingV1().NetworkPolicies(namespace)
+	existing, err := policies.Get(ctx, name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		_, err = policies.Create(ctx, &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "oinc",
+					"oinc.io/console-plugin":       pluginName,
+				},
+			},
+			Spec: spec,
+		}, metav1.CreateOptions{})
+	} else if err == nil {
+		if existing.Labels["app.kubernetes.io/managed-by"] != "oinc" {
+			return fmt.Errorf("NetworkPolicy %s/%s already exists and is not managed by OINC", namespace, name)
+		}
+		existing.Spec = spec
+		_, err = policies.Update(ctx, existing, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("allowing the Console to reach %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 func consoleProxyServiceName(pluginName, alias string) string {
@@ -643,4 +837,172 @@ func waitForConsole(port int) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("console not reachable at %s after 60s", url)
+}
+
+// bridgePluginEnv renders plugin wiring (name=url, comma-separated) as
+// Bridge's plugin and i18n namespace settings, pointing container host
+// placeholders at the runtime's host address.
+func bridgePluginEnv(plugins, containerHost string) (bridgePlugins, i18nNamespaces string) {
+	var specs, namespaces []string
+	for _, spec := range strings.Split(plugins, ",") {
+		resolved := resolvePluginURL(strings.TrimSpace(spec), containerHost)
+		name, _, ok := strings.Cut(resolved, "=")
+		if !ok || name == "" {
+			continue
+		}
+		specs = append(specs, resolved)
+		namespaces = append(namespaces, "plugin__"+name)
+	}
+	return strings.Join(specs, ","), strings.Join(namespaces, ",")
+}
+
+// withConsolePlugin adds name=url to plugin wiring. changed is false when the
+// plugin is already loaded from that url.
+func withConsolePlugin(plugins, name, url string) (result string, changed bool, err error) {
+	var specs []string
+	for _, spec := range strings.Split(plugins, ",") {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		if existing, existingURL, _ := strings.Cut(spec, "="); existing == name {
+			if existingURL == url {
+				return plugins, false, nil
+			}
+			return "", false, fmt.Errorf("the Console already loads %s from %s; remove that --console-plugin to load it from %s", name, existingURL, url)
+		}
+		specs = append(specs, spec)
+	}
+	return strings.Join(append(specs, name+"="+url), ","), true, nil
+}
+
+// consoleSettings reads back what the Console container was started with.
+func consoleSettings(info *runtime.ContainerInfo) (ConsoleOpts, *consoleProxyOptions) {
+	console := ConsoleOpts{
+		Port:     9000,
+		Plugin:   info.Env["BRIDGE_PLUGINS"],
+		Branding: info.Env["BRIDGE_BRANDING"],
+	}
+	if port, ok := info.Ports[9000]; ok {
+		console.Port = port
+	}
+
+	if info.Env["BRIDGE_PLUGIN_PROXY"] == "" {
+		return console, nil
+	}
+	proxy := &consoleProxyOptions{
+		config:     info.Env["BRIDGE_PLUGIN_PROXY"],
+		extraHosts: info.ExtraHosts,
+	}
+	for _, bind := range info.Binds {
+		if source, rest, ok := strings.Cut(bind, ":"); ok && strings.HasPrefix(rest, consoleProxyCAPath) {
+			proxy.caFile = source
+		}
+	}
+	return console, proxy
+}
+
+// loadConsolePlugin restarts the Console so that it also loads a plugin its
+// operator serves inside the cluster, keeping the rest of its settings. The
+// Console starts before addons do, so one that brings a plugin has to reload it.
+func loadConsolePlugin(ctx context.Context, rt *runtime.Runtime, rawKubeconfig []byte, name string, logger *slog.Logger) error {
+	config, err := clientcmd.RESTConfigFromKubeConfig(rawKubeconfig)
+	if err != nil {
+		return fmt.Errorf("building rest config: %w", err)
+	}
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating k8s client: %w", err)
+	}
+	dynClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	assets, added, err := inClusterConsolePluginWithCAWriter(ctx, client, dynClient, name, logger, writeConsoleServiceCA)
+	if err != nil {
+		return err
+	}
+
+	current, err := rt.InspectContainer(consoleContainer)
+	if err != nil {
+		return fmt.Errorf("finding the Console to load %s into: %w", name, err)
+	}
+	console, currentProxy := consoleSettings(current)
+	plugins, changed, err := withConsolePlugin(console.Plugin, name, assets)
+	if err != nil {
+		return err
+	}
+	proxyOptions, err := mergeProxyOptions(currentProxy, added, name)
+	if err != nil {
+		return err
+	}
+	consoleURL := fmt.Sprintf("http://localhost:%d", console.Port)
+	if !changed && current.Running && sameProxyOptions(currentProxy, proxyOptions) {
+		return waitForConsolePlugin(ctx, consoleURL, name, time.Minute, 2*time.Second)
+	}
+	console.Plugin = plugins
+
+	cluster, err := rt.InspectContainer(containerName)
+	if err != nil {
+		return fmt.Errorf("inspecting %s container: %w", containerName, err)
+	}
+	ver, ok := version.ResolveFromImage(cluster.Image)
+	if !ok {
+		return fmt.Errorf("could not determine the running OCP version from %s", cluster.Image)
+	}
+	token, err := createBearerToken(client)
+	if err != nil {
+		return fmt.Errorf("creating console bearer token: %w", err)
+	}
+
+	logger.Info("restarting console to load plugin", "plugin", name, "url", assets)
+	if err := startConsoleContainer(rt, ver, token, console, proxyOptions); err != nil {
+		return fmt.Errorf("restarting Console with %s: %w", name, err)
+	}
+	if err := waitForConsole(console.Port); err != nil {
+		return err
+	}
+	return waitForConsolePlugin(ctx, consoleURL, name, 2*time.Minute, 2*time.Second)
+}
+
+func sameProxyOptions(a, b *consoleProxyOptions) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.config == b.config && a.caFile == b.caFile && maps.Equal(a.extraHosts, b.extraHosts)
+}
+
+// waitForConsolePlugin polls until the Console serves a plugin's manifest,
+// which proves it can reach and trust wherever the plugin is served from.
+func waitForConsolePlugin(ctx context.Context, consoleURL, name string, timeout, interval time.Duration) error {
+	url := fmt.Sprintf("%s/api/plugins/%s/plugin-manifest.json", consoleURL, name)
+	// Bridge can take a while to give up on a plugin it cannot reach
+	httpClient := &http.Client{Timeout: 20 * time.Second}
+	deadline := time.Now().Add(timeout)
+	last := "no response"
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := httpClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			last = resp.Status
+		} else {
+			last = err.Error()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the Console cannot load plugin %s (%s): check that it can reach and trust the plugin's Service", name, last)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }

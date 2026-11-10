@@ -154,10 +154,13 @@ The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons
 | `metallb`      | LoadBalancer IP allocation                | upstream manifests (kubectl) |
 | `istio`        | Istio service mesh via Sail operator      | helm                         |
 | `kuadrant`     | API management (rate limiting, auth, DNS) | helm                         |
+| `rhcl`         | Red Hat Connectivity Link                 | OLM (Red Hat operator index) |
 | `rhdh`         | Red Hat Developer Hub (Backstage)         | helm                         |
 | `mcp-gateway`  | MCP Gateway (AI tool gateway)             | helm (OCI)                   |
 
 Dependencies are resolved automatically. Installing `kuadrant` will pull in `gateway-api`, `cert-manager`, `metallb`, and `istio`. Installing `mcp-gateway` will pull in `kuadrant` and all its dependencies.
+
+`rhcl` installs downstream Kuadrant in place of `kuadrant`, so the two cannot be combined. See [RHCL](#rhcl).
 
 With recent `kuadrant@latest` builds, `mcp-gateway` reuses Kuadrant's bundled MCP controller and CRDs and configures the gateway instance. Older Kuadrant releases get the standalone Helm install. See [MCP Gateway addon details](docs/addons.md#mcp-gateway) for values overlays and recovery from a duplicate CRD install.
 
@@ -216,6 +219,27 @@ oinc create --addons rhdh \
 
 `--rhdh-values` merges a helm values overlay into the chart install, for dynamic-plugins config and app-config extras. See [docs/addons.md](docs/addons.md) for the full option reference and the MicroShift-specific overrides the addon applies.
 
+### RHCL
+
+The `rhcl` addon installs Red Hat Connectivity Link, the downstream build of Kuadrant, through OLM from a Red Hat operator index. It needs a pull secret with `registry.redhat.io` credentials.
+
+```bash
+oinc pull-secret set ~/Downloads/pull-secret.json
+oinc create --version ocp-4.23 --addons rhcl@1.4.3
+
+# OKD versions mount the pull secret when rhcl is requested at create time
+oinc create --version 4.22 --addons rhcl@1.4.3
+
+# with the developer portal and the RHCL console plugin
+oinc create --version ocp-4.23 --addons rhcl@1.4.3 \
+  --kuadrant-devportal \
+  --rhcl-console-plugin
+```
+
+`rhcl@x.y.z` pins that version and leaves later ones unapproved. Bare `rhcl` installs the head of the `stable` channel, which ends at 1.4.3; pin later versions. RHCL versions are not Kuadrant versions: RHCL 1.4 is built from kuadrant-operator `release-1.5`.
+
+See [docs/addons.md](docs/addons.md#rhcl) for channels, index selection, the pull secret and the console plugin.
+
 ## Kubeconfig
 
 `oinc create` automatically merges the cluster kubeconfig into `~/.kube/config` with context name `oinc`. If you need to refresh it:
@@ -258,7 +282,8 @@ oinc console sync-plugin-proxy <ConsolePlugin-name> \
 
 The command reads `ConsolePlugin.spec.proxy`, creates OINC-only LoadBalancer
 shadow Services so the Console container can reach the in-cluster backends,
-mounts the OpenShift service CA, and restarts the standalone Console. It does
+with NetworkPolicies admitting it to them, mounts the OpenShift service CA,
+and restarts the standalone Console. It does
 not change the product deployment contract: the plugin operator remains the
 source of truth for the backend Service and `ConsolePlugin` resource.
 Reload the browser after the Console restarts. The restart does not read back

@@ -38,12 +38,7 @@ type CreateOpts struct {
 // resolveAddons splits a comma-separated addon list, resolves dependency
 // order and runs each addon's validation hook.
 func resolveAddons(addonList string) ([]addons.Addon, error) {
-	names := strings.Split(addonList, ",")
-	for i := range names {
-		names[i] = strings.TrimSpace(names[i])
-	}
-
-	sorted, err := addons.Resolve(names)
+	sorted, err := addons.Resolve(splitAddons(addonList))
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +47,14 @@ func resolveAddons(addonList string) ([]addons.Addon, error) {
 	}
 
 	return sorted, nil
+}
+
+func splitAddons(addonList string) []string {
+	names := strings.Split(addonList, ",")
+	for i := range names {
+		names[i] = strings.TrimSpace(names[i])
+	}
+	return names
 }
 
 // PreflightAddons validates an addon list before any container work, so bad
@@ -69,10 +72,15 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 		raw []byte
 	)
 
+	// resolved by the pre-flight step, for what the container must provide
+	var requested []addons.Addon
+
 	var steps []*tui.Step
 	if opts.Addons != "" {
 		steps = append(steps, &tui.Step{Name: "validating addons", Run: func() error {
-			return PreflightAddons(opts.Addons)
+			sorted, err := resolveAddons(opts.Addons)
+			requested = sorted
+			return err
 		}})
 	}
 
@@ -103,21 +111,8 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 				}
 				return rt.StartContainer(containerName)
 			}
-			copts := runtime.ContainerOpts{
-				Name:             containerName,
-				Image:            ver.MicroShiftImage(),
-				Hostname:         hostname,
-				Privileged:       true,
-				NestedContainers: true,
-				Platform:         ver.Platform(),
-				Labels:           map[string]string{labelKey: containerName},
-				Ports: []runtime.PortMapping{
-					{Host: opts.HTTPPort, Container: 80},
-					{Host: opts.HTTPSPort, Container: 443},
-					{Host: 6443, Container: 6443},
-				},
-			}
-			if err := configurePullSecret(&copts, ver); err != nil {
+			copts, err := clusterContainerOpts(opts, ver, requested)
+			if err != nil {
 				return err
 			}
 			if err := rt.CreateContainer(copts); err != nil {
@@ -179,11 +174,14 @@ func Create(ctx context.Context, opts CreateOpts, logger *slog.Logger) error {
 
 // createPlain is the original slog-based create for non-TTY contexts.
 func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) error {
+	var requested []addons.Addon
 	if opts.Addons != "" {
 		logger.Info("validating addons", "addons", opts.Addons)
-		if err := PreflightAddons(opts.Addons); err != nil {
+		sorted, err := resolveAddons(opts.Addons)
+		if err != nil {
 			return fmt.Errorf("addon pre-flight: %w", err)
 		}
+		requested = sorted
 	}
 
 	ver, err := version.ResolveContext(ctx, opts.Version)
@@ -215,22 +213,8 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 		logger.Info("container already exists, starting")
 	} else {
 		logger.Info("creating container")
-		copts := runtime.ContainerOpts{
-			Name:             containerName,
-			Image:            image,
-			Hostname:         hostname,
-			Privileged:       true,
-			NestedContainers: true,
-			Platform:         platform,
-			Labels:           map[string]string{labelKey: containerName},
-			Ports: []runtime.PortMapping{
-				{Host: opts.HTTPPort, Container: 80},
-				{Host: opts.HTTPSPort, Container: 443},
-				{Host: 6443, Container: 6443},
-			},
-		}
-
-		if err := configurePullSecret(&copts, ver); err != nil {
+		copts, err := clusterContainerOpts(opts, ver, requested)
+		if err != nil {
 			return err
 		}
 		if err := rt.CreateContainer(copts); err != nil {
@@ -301,20 +285,28 @@ func InstallAddons(ctx context.Context, addonList string, kubeconfig []byte, rt 
 	if err != nil {
 		return err
 	}
+	cfg, err := addonConfig(kubeconfig, rt, logger)
+	if err != nil {
+		return err
+	}
+	return installAddons(ctx, sorted, cfg)
+}
 
+// addonConfig builds what addons need to reach the cluster and its container.
+func addonConfig(kubeconfig []byte, rt *runtime.Runtime, logger *slog.Logger) (*addons.Config, error) {
 	config, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	if err != nil {
-		return fmt.Errorf("building rest config: %w", err)
+		return nil, fmt.Errorf("building rest config: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("creating k8s client: %w", err)
+		return nil, fmt.Errorf("creating k8s client: %w", err)
 	}
 
 	dynClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("creating dynamic client: %w", err)
+		return nil, fmt.Errorf("creating dynamic client: %w", err)
 	}
 
 	ingressPort, ingressErr := ingressHTTPPort(rt)
@@ -328,8 +320,28 @@ func InstallAddons(ctx context.Context, addonList string, kubeconfig []byte, rt 
 		IngressHost:     hostname,
 		IngressHTTPPort: ingressPort,
 		IngressErr:      ingressErr,
+		LoadConsolePlugin: func(ctx context.Context, name string) error {
+			return loadConsolePlugin(ctx, rt, kubeconfig, name, logger)
+		},
+	}
+	// addons that install OpenShift API types need the matching branch
+	if info, err := rt.InspectContainer(containerName); err == nil {
+		if ver, ok := version.ResolveFromImage(info.Image); ok {
+			cfg.OpenShiftVersion = ver.Minor
+			cfg.OpenShiftAPIBranch = ver.APIBranch
+		}
+	}
+	return cfg, nil
+}
+
+// installAddons installs addons in the order given, once every one of them
+// accepts the cluster.
+func installAddons(ctx context.Context, sorted []addons.Addon, cfg *addons.Config) error {
+	if err := addons.ValidateCluster(ctx, sorted, cfg); err != nil {
+		return err
 	}
 
+	logger := cfg.Logger
 	for _, a := range sorted {
 		logger.Info("installing addon", "addon", a.Name())
 		if err := a.Install(ctx, cfg); err != nil {
@@ -362,33 +374,12 @@ func AddonInstallSteps(ctx context.Context, addonList string, kc []byte, rt *run
 		}
 	}
 
-	config, err := clientcmd.RESTConfigFromKubeConfig(kc)
+	cfg, err := addonConfig(kc, rt, slog.New(slog.NewTextHandler(devNull{}, nil)))
 	if err != nil {
-		return nil, fmt.Errorf("building rest config: %w", err)
+		return nil, err
 	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("creating k8s client: %w", err)
-	}
-
-	dynClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("creating dynamic client: %w", err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(devNull{}, nil))
-	ingressPort, ingressErr := ingressHTTPPort(rt)
-	cfg := &addons.Config{
-		Kubeconfig:      kc,
-		DynamicClient:   dynClient,
-		Clientset:       clientset,
-		Runtime:         rt,
-		Logger:          logger,
-		Container:       containerName,
-		IngressHost:     hostname,
-		IngressHTTPPort: ingressPort,
-		IngressErr:      ingressErr,
+	if err := addons.ValidateCluster(ctx, sorted, cfg); err != nil {
+		return nil, err
 	}
 
 	var steps []*tui.Step
@@ -423,16 +414,51 @@ func PreflightVersion(ver version.OCPVersion) error {
 	return err
 }
 
-func configurePullSecret(opts *runtime.ContainerOpts, ver version.OCPVersion) error {
-	if !ver.RequiresPullSecret {
+// configurePullSecret mounts the stored pull secret read-only where CRI-O
+// looks for it, when the version pulls its own images with it or an addon in
+// the request needs it. every other cluster gets no credentials.
+func configurePullSecret(opts *runtime.ContainerOpts, ver version.OCPVersion, addonsNeedIt bool) error {
+	var path string
+	var err error
+	switch {
+	case ver.RequiresPullSecret:
+		path, err = pullsecret.RequiredPath()
+	case addonsNeedIt:
+		// the addon's own pre-flight checks for its registry's credentials
+		if _, err = pullsecret.Load(); err == nil {
+			path, err = pullsecret.Path()
+		}
+	default:
 		return nil
 	}
-	path, err := pullsecret.RequiredPath()
 	if err != nil {
 		return err
 	}
 	opts.Volumes = append(opts.Volumes, path+":/etc/crio/openshift-pull-secret:ro")
 	return nil
+}
+
+// clusterContainerOpts describes the cluster container for a version, with
+// what the requested addons need from it.
+func clusterContainerOpts(opts CreateOpts, ver version.OCPVersion, requested []addons.Addon) (runtime.ContainerOpts, error) {
+	copts := runtime.ContainerOpts{
+		Name:             containerName,
+		Image:            ver.MicroShiftImage(),
+		Hostname:         hostname,
+		Privileged:       true,
+		NestedContainers: true,
+		Platform:         ver.Platform(),
+		Labels:           map[string]string{labelKey: containerName},
+		Ports: []runtime.PortMapping{
+			{Host: opts.HTTPPort, Container: 80},
+			{Host: opts.HTTPSPort, Container: 443},
+			{Host: 6443, Container: 6443},
+		},
+	}
+	if err := configurePullSecret(&copts, ver, addons.NeedPullSecret(requested)); err != nil {
+		return runtime.ContainerOpts{}, err
+	}
+	return copts, nil
 }
 
 func checkExistingVersion(rt *runtime.Runtime, ver version.OCPVersion) error {

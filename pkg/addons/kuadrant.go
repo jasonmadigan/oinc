@@ -23,6 +23,7 @@ const (
 	defaultKuadrantVersion     = "1.4.1"
 	kuadrantChartRepoURL       = "https://kuadrant.io/helm-charts/"
 	latestKuadrantCatalogImage = "quay.io/kuadrant/kuadrant-operator-catalog:latest"
+	kuadrantOperatorDeployment = "kuadrant-operator-controller-manager"
 )
 
 func init() { Register(&kuadrant{}) }
@@ -97,107 +98,24 @@ func (k *kuadrant) installViaHelm(ctx context.Context, cfg *Config, version stri
 }
 
 func (k *kuadrant) installViaOLM(ctx context.Context, cfg *Config) error {
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		return fmt.Errorf("kuadrant addon with version=latest requires kubectl: %w", err)
-	}
-
 	cfg.Logger.Info("installing kuadrant operator via OLM", "catalogImage", latestKuadrantCatalogImage)
 
-	// create namespace
-	ns := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "v1",
-			"kind":       "Namespace",
-			"metadata": map[string]any{
-				"name": "kuadrant-system",
+	operator := olmOperator{
+		namespace:          kuadrantNamespace,
+		catalog:            "kuadrant-operator-catalog",
+		catalogImage:       latestKuadrantCatalogImage,
+		catalogDisplayName: "Kuadrant Operators",
+		catalogPoll:        true,
+		pkg:                "kuadrant-operator",
+		channel:            "preview",
+		env: []any{
+			map[string]any{
+				"name":  "ISTIO_GATEWAY_CONTROLLER_NAMES",
+				"value": "openshift.io/gateway-controller/v1",
 			},
 		},
 	}
-	nsGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
-	if err := ensureResource(ctx, cfg, nsGVR, ns); err != nil {
-		return fmt.Errorf("create namespace: %w", err)
-	}
-
-	// create OperatorGroup
-	operatorGroup := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "operators.coreos.com/v1",
-			"kind":       "OperatorGroup",
-			"metadata": map[string]any{
-				"name":      "kuadrant-system",
-				"namespace": "kuadrant-system",
-			},
-			"spec": map[string]any{
-				"upgradeStrategy": "Default",
-			},
-		},
-	}
-	ogGVR := schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1", Resource: "operatorgroups"}
-	if err := ensureResource(ctx, cfg, ogGVR, operatorGroup); err != nil {
-		return fmt.Errorf("create operatorgroup: %w", err)
-	}
-
-	// create CatalogSource
-	catalogSource := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "operators.coreos.com/v1alpha1",
-			"kind":       "CatalogSource",
-			"metadata": map[string]any{
-				"name":      "kuadrant-operator-catalog",
-				"namespace": "kuadrant-system",
-			},
-			"spec": map[string]any{
-				"sourceType":  "grpc",
-				"image":       latestKuadrantCatalogImage,
-				"displayName": "Kuadrant Operators",
-				"publisher":   "grpc",
-				"updateStrategy": map[string]any{
-					"registryPoll": map[string]any{
-						"interval": "5m",
-					},
-				},
-			},
-		},
-	}
-	csGVR := schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "catalogsources"}
-	if err := ensureResource(ctx, cfg, csGVR, catalogSource); err != nil {
-		return fmt.Errorf("create catalogsource: %w", err)
-	}
-
-	// create Subscription
-	subscription := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "operators.coreos.com/v1alpha1",
-			"kind":       "Subscription",
-			"metadata": map[string]any{
-				"name":      "kuadrant-operator",
-				"namespace": "kuadrant-system",
-			},
-			"spec": map[string]any{
-				"channel":             "preview",
-				"installPlanApproval": "Automatic",
-				"name":                "kuadrant-operator",
-				"source":              "kuadrant-operator-catalog",
-				"sourceNamespace":     "kuadrant-system",
-				"config": map[string]any{
-					"env": []map[string]any{
-						{
-							"name":  "ISTIO_GATEWAY_CONTROLLER_NAMES",
-							"value": "openshift.io/gateway-controller/v1",
-						},
-					},
-				},
-			},
-		},
-	}
-	subGVR := schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "subscriptions"}
-	if err := ensureResource(ctx, cfg, subGVR, subscription); err != nil {
-		return fmt.Errorf("create subscription: %w", err)
-	}
-
-	// wait for subscription to be ready
-	cfg.Logger.Info("waiting for kuadrant operator subscription")
-	if err := k.waitForSubscription(ctx, cfg, 5*time.Minute); err != nil {
+	if err := operator.install(ctx, cfg, 5*time.Minute, 5*time.Second); err != nil {
 		return err
 	}
 
@@ -205,70 +123,26 @@ func (k *kuadrant) installViaOLM(ctx context.Context, cfg *Config) error {
 	return nil
 }
 
-func (k *kuadrant) waitForSubscription(ctx context.Context, cfg *Config, timeout time.Duration) error {
-	subGVR := schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "subscriptions"}
-	csvGVR := schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "clusterserviceversions"}
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		// get subscription
-		sub, err := cfg.DynamicClient.Resource(subGVR).Namespace("kuadrant-system").Get(ctx, "kuadrant-operator", metav1.GetOptions{})
-		if err != nil {
-			cfg.Logger.Debug("waiting for subscription", "err", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		// check subscription state
-		state, found, _ := unstructured.NestedString(sub.Object, "status", "state")
-		if !found || state != "AtLatestKnown" {
-			cfg.Logger.Debug("waiting for subscription state", "current", state)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		// get installed CSV
-		csvName, found, _ := unstructured.NestedString(sub.Object, "status", "installedCSV")
-		if !found || csvName == "" {
-			cfg.Logger.Debug("waiting for installedCSV")
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		// check CSV phase
-		csv, err := cfg.DynamicClient.Resource(csvGVR).Namespace("kuadrant-system").Get(ctx, csvName, metav1.GetOptions{})
-		if err != nil {
-			cfg.Logger.Debug("waiting for CSV", "name", csvName, "err", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		phase, found, _ := unstructured.NestedString(csv.Object, "status", "phase")
-		if found && phase == "Succeeded" {
-			cfg.Logger.Info("kuadrant operator CSV ready", "csv", csvName)
-			return nil
-		}
-
-		cfg.Logger.Debug("waiting for CSV phase", "csv", csvName, "phase", phase)
-		time.Sleep(5 * time.Second)
-	}
-
-	return fmt.Errorf("kuadrant operator not ready after %s", timeout)
+func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
+	return kuadrantReady(ctx, cfg, k.devportal)
 }
 
-func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
-	if err := waitForDeployment(ctx, cfg, "kuadrant-system", "kuadrant-operator-controller-manager", 5*time.Minute); err != nil {
+// kuadrantReady waits for the operator, creates the Kuadrant CR and waits for
+// it to become ready. shared with the rhcl addon, which installs the same
+// operator from a different source.
+func kuadrantReady(ctx context.Context, cfg *Config, devportal bool) error {
+	if err := waitForDeployment(ctx, cfg, kuadrantNamespace, kuadrantOperatorDeployment, 5*time.Minute); err != nil {
 		return err
 	}
 
 	waitForAdmissionMapper(ctx, cfg)
 
 	// create the Kuadrant CR to deploy operand components
-	if err := ensureResource(ctx, cfg, kuadrantGVR, k.kuadrantCR()); err != nil {
+	if err := ensureResource(ctx, cfg, kuadrantGVR, kuadrantCR(devportal)); err != nil {
 		return err
 	}
 
-	if k.devportal {
+	if devportal {
 		if err := ensureDevportal(ctx, cfg); err != nil {
 			return err
 		}
@@ -279,11 +153,11 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	if k.devportal {
+	if devportal {
 		// the operator creates the controller deployment asynchronously;
 		// waitForDeployment rides out both its appearance and its rollout
 		cfg.Logger.Info("waiting for developer portal controller")
-		if err := waitForDeployment(ctx, cfg, "kuadrant-system", "developer-portal-controller", 5*time.Minute); err != nil {
+		if err := waitForDeployment(ctx, cfg, kuadrantNamespace, "developer-portal-controller", 5*time.Minute); err != nil {
 			return fmt.Errorf("developer portal enabled on the kuadrant CR but its controller did not roll out: %w", err)
 		}
 	}
@@ -292,16 +166,16 @@ func (k *kuadrant) Ready(ctx context.Context, cfg *Config) error {
 
 // kuadrantCR builds the Kuadrant CR. Without options it stays metadata-only,
 // matching what previous releases created.
-func (k *kuadrant) kuadrantCR() *unstructured.Unstructured {
+func kuadrantCR(devportal bool) *unstructured.Unstructured {
 	obj := map[string]any{
 		"apiVersion": "kuadrant.io/v1beta1",
 		"kind":       "Kuadrant",
 		"metadata": map[string]any{
 			"name":      "kuadrant",
-			"namespace": "kuadrant-system",
+			"namespace": kuadrantNamespace,
 		},
 	}
-	if k.devportal {
+	if devportal {
 		obj["spec"] = map[string]any{
 			"components": map[string]any{
 				"developerPortal": map[string]any{"enabled": true},
@@ -337,7 +211,7 @@ func ensureDevportal(ctx context.Context, cfg *Config) error {
 		return fmt.Errorf("getting kuadrant CR: %w", err)
 	}
 	if !devportalEnabled(obj) {
-		return fmt.Errorf("spec.components.developerPortal did not persist on the kuadrant CR: the installed kuadrant version likely predates the developer portal, pin one that ships it (e.g. kuadrant@latest)")
+		return fmt.Errorf("spec.components.developerPortal did not persist on the kuadrant CR: the installed version likely predates the developer portal, install one that ships it")
 	}
 	return nil
 }

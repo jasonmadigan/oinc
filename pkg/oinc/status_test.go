@@ -64,3 +64,39 @@ func TestFormatUptime(t *testing.T) {
 		})
 	}
 }
+
+// RHCL runs the Kuadrant operator under the same namespace and deployment
+// name, so status has to tell the two addons apart or the installer would
+// treat one as the other.
+func TestDetectAddonsTellsRHCLFromKuadrant(t *testing.T) {
+	namespace := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Namespace",
+		"metadata": map[string]any{"name": "kuadrant-system"},
+	}}
+	operator := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "kuadrant-operator-controller-manager", "namespace": "kuadrant-system"},
+		"status":   map[string]any{"availableReplicas": int64(1)},
+	}}
+	subscription := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "operators.coreos.com/v1alpha1", "kind": "Subscription",
+		"metadata": map[string]any{"name": "rhcl-operator", "namespace": "kuadrant-system"},
+	}}
+
+	for _, tt := range []struct {
+		name    string
+		objects []runtime.Object
+		want    AddonInfo
+	}{
+		{"upstream operator", []runtime.Object{namespace, operator}, AddonInfo{Name: "kuadrant", Ready: true}},
+		{"operator installed by the rhcl subscription", []runtime.Object{namespace, operator, subscription}, AddonInfo{Name: "rhcl", Ready: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), tt.objects...)
+			got := detectAddonsIn(context.Background(), client)
+			if len(got) != 1 || got[0] != tt.want {
+				t.Errorf("detected %+v, want only %+v", got, tt.want)
+			}
+		})
+	}
+}

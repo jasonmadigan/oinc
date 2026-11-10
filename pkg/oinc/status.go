@@ -3,6 +3,7 @@ package oinc
 import (
 	"context"
 	"fmt"
+	"github.com/jasonmadigan/oinc/pkg/addons"
 	"sort"
 	"strings"
 	"time"
@@ -123,8 +124,11 @@ func detectAddons() []AddonInfo {
 		return nil
 	}
 
-	ctx := context.Background()
-	var addons []AddonInfo
+	return detectAddonsIn(context.Background(), dyn)
+}
+
+func detectAddonsIn(ctx context.Context, dyn dynamic.Interface) []AddonInfo {
+	var detected []AddonInfo
 
 	for _, check := range addonChecks {
 		_, err := dyn.Resource(nsGVR).Get(ctx, check.namespace, metav1.GetOptions{})
@@ -135,17 +139,22 @@ func detectAddons() []AddonInfo {
 		if check.name == "mcp-gateway" && !ready {
 			ready = managedMCPGatewayReady(ctx, dyn)
 		}
-		addons = append(addons, AddonInfo{Name: check.name, Ready: ready})
+		name := check.name
+		// rhcl runs the same operator deployment in the same namespace
+		if name == "kuadrant" && addons.RHCLInstalled(ctx, dyn) {
+			name = "rhcl"
+		}
+		detected = append(detected, AddonInfo{Name: name, Ready: ready})
 	}
 
 	// gateway-api: CRD-only, ready if CRD is established
-	_, err = dyn.Resource(crdGVR).Get(ctx, "gatewayclasses.gateway.networking.k8s.io", metav1.GetOptions{})
+	_, err := dyn.Resource(crdGVR).Get(ctx, "gatewayclasses.gateway.networking.k8s.io", metav1.GetOptions{})
 	if err == nil {
-		addons = append(addons, AddonInfo{Name: "gateway-api", Ready: true})
+		detected = append(detected, AddonInfo{Name: "gateway-api", Ready: true})
 	}
 
-	sort.Slice(addons, func(i, j int) bool { return addons[i].Name < addons[j].Name })
-	return addons
+	sort.Slice(detected, func(i, j int) bool { return detected[i].Name < detected[j].Name })
+	return detected
 }
 
 func managedMCPGatewayReady(ctx context.Context, dyn dynamic.Interface) bool {

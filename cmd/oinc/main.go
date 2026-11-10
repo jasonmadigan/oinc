@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -44,6 +45,9 @@ var (
 	flagGatewayAPIGateway  bool
 
 	flagMCPGatewayValues string
+
+	flagRHCLIndex         string
+	flagRHCLConsolePlugin bool
 )
 
 // applyRHDHFlags forwards rhdh addon flags to the addon registry.
@@ -82,6 +86,24 @@ func addMCPGatewayFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagMCPGatewayValues, "mcp-gateway-values", "", "mcp-gateway addon: path to a helm values overlay merged into the chart install")
 }
 
+// applyRHCLFlags forwards rhcl addon flags to the addon registry.
+func applyRHCLFlags() {
+	opts := map[string]string{}
+	if flagRHCLIndex != "" {
+		opts["index"] = flagRHCLIndex
+	}
+	if flagRHCLConsolePlugin {
+		opts["console-plugin"] = "true"
+	}
+	addons.Configure("rhcl", opts)
+}
+
+// addRHCLFlags registers the rhcl addon flags on a command.
+func addRHCLFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&flagRHCLIndex, "rhcl-index", "", "rhcl addon: operator index image to install from, skipping the Red Hat catalog lookup")
+	cmd.Flags().BoolVar(&flagRHCLConsolePlugin, "rhcl-console-plugin", false, "rhcl addon: run the RHCL console plugin beside the Console and load it")
+}
+
 // applyInstanceFlags forwards addon instance-creation flags to the addon registry.
 func applyInstanceFlags() {
 	if flagKuadrantDevportal {
@@ -97,7 +119,7 @@ func applyInstanceFlags() {
 
 // addInstanceFlags registers the addon instance-creation flags on a command.
 func addInstanceFlags(cmd *cobra.Command) {
-	cmd.Flags().BoolVar(&flagKuadrantDevportal, "kuadrant-devportal", false, "kuadrant addon: enable the developer portal on the Kuadrant CR and wait for its controller")
+	cmd.Flags().BoolVar(&flagKuadrantDevportal, "kuadrant-devportal", false, "kuadrant or rhcl addon: enable the developer portal on the Kuadrant CR and wait for its controller")
 	cmd.Flags().StringVar(&flagMetalLBAddressPool, "metallb-address-pool", "", "metallb addon: create an IPAddressPool and L2Advertisement (\"auto\" derives a range from the container network, or give a range/CIDR)")
 	cmd.Flags().BoolVar(&flagGatewayAPIGateway, "gateway-api-gateway", false, "gateway-api addon: create a default Gateway (kuadrant-ingressgateway, istio class) and wait for it to be programmed")
 }
@@ -169,6 +191,7 @@ func main() {
 
 			applyRHDHFlags()
 			applyMCPGatewayFlags()
+			applyRHCLFlags()
 			applyInstanceFlags()
 
 			// addon option flags without an addon list would be dropped
@@ -199,6 +222,7 @@ func main() {
 	createCmd.Flags().StringVar(&flagAddons, "addons", "", "comma-separated addons to install")
 	addRHDHFlags(createCmd)
 	addMCPGatewayFlags(createCmd)
+	addRHCLFlags(createCmd)
 	addInstanceFlags(createCmd)
 
 	var flagForce bool
@@ -386,10 +410,8 @@ func main() {
 			sort.Strings(names)
 			var rows []string
 			for _, name := range names {
-				a := all[name]
-				deps := a.Dependencies()
-				if len(deps) > 0 {
-					rows = append(rows, fmt.Sprintf("  %-16s %s", name, tui.Dim.Render("requires: "+strings.Join(deps, ", "))))
+				if hint := addonHint(all[name]); hint != "" {
+					rows = append(rows, fmt.Sprintf("  %-16s %s", name, tui.Dim.Render(hint)))
 				} else {
 					rows = append(rows, fmt.Sprintf("  %s", name))
 				}
@@ -407,6 +429,7 @@ func main() {
 			logger := newLogger(flagLogLevel)
 			applyRHDHFlags()
 			applyMCPGatewayFlags()
+			applyRHCLFlags()
 			applyInstanceFlags()
 
 			addonArg := ""
@@ -434,7 +457,7 @@ func main() {
 
 			// no args + TTY: interactive picker
 			if addonArg == "" && tui.IsTTY() {
-				selected, err := runAddonPicker(flagRuntime)
+				selected, err := runAddonPicker(cmd.Context(), flagRuntime)
 				if err != nil {
 					return err
 				}
@@ -466,6 +489,7 @@ func main() {
 
 	addRHDHFlags(addonInstallCmd)
 	addMCPGatewayFlags(addonInstallCmd)
+	addRHCLFlags(addonInstallCmd)
 	addInstanceFlags(addonInstallCmd)
 
 	addonCmd.AddCommand(addonListCmd, addonInstallCmd)
@@ -597,7 +621,7 @@ func runVersionPicker() (string, error) {
 	return fm.Selected(), nil
 }
 
-func runAddonPicker(runtimeOverride string) ([]string, error) {
+func runAddonPicker(ctx context.Context, runtimeOverride string) ([]string, error) {
 	all := addons.All()
 	names := make([]string, 0, len(all))
 	for name := range all {
@@ -614,14 +638,9 @@ func runAddonPicker(runtimeOverride string) ([]string, error) {
 
 	var items []tui.PickerItem
 	for _, name := range names {
-		a := all[name]
-		hint := ""
-		if deps := a.Dependencies(); len(deps) > 0 {
-			hint = "requires: " + strings.Join(deps, ", ")
-		}
 		items = append(items, tui.PickerItem{
 			Name:      name,
-			Hint:      hint,
+			Hint:      addonHint(all[name]),
 			Installed: installed[name],
 		})
 	}
@@ -636,7 +655,77 @@ func runAddonPicker(runtimeOverride string) ([]string, error) {
 	if fm.Aborted() {
 		return nil, nil
 	}
-	return fm.Selected(), nil
+
+	selected := fm.Selected()
+	for i, name := range selected {
+		versioned, ok := all[name].(addons.Versioned)
+		if !ok {
+			continue
+		}
+		picked, ok, err := runAddonVersionPicker(ctx, name, versioned)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		if picked != "" {
+			selected[i] = name + "@" + picked
+		}
+	}
+	return selected, nil
+}
+
+// addonHint describes what an addon needs, for listings.
+func addonHint(a addons.Addon) string {
+	var parts []string
+	if deps := a.Dependencies(); len(deps) > 0 {
+		parts = append(parts, "requires: "+strings.Join(deps, ", "))
+	}
+	if n, ok := a.(addons.Noted); ok {
+		parts = append(parts, n.Note())
+	}
+	return strings.Join(parts, "; ")
+}
+
+type addonVersions struct {
+	choices []addons.VersionChoice
+	err     error
+}
+
+// runAddonVersionPicker offers the versions an addon's catalogue lists. The
+// version is empty when the addon has none to offer; ok is false when the
+// user aborts.
+func runAddonVersionPicker(ctx context.Context, name string, versioned addons.Versioned) (version string, ok bool, err error) {
+	loading := tui.NewLoadingModel("fetching "+name+" versions", func() addonVersions {
+		choices, err := versioned.Versions(ctx)
+		return addonVersions{choices, err}
+	})
+	loaded, err := tea.NewProgram(loading).Run()
+	if err != nil {
+		return "", false, err
+	}
+	versions := loaded.(tui.LoadingModel[addonVersions]).Result()
+	if versions.err != nil {
+		return "", false, versions.err
+	}
+	if len(versions.choices) == 0 {
+		return "", true, nil
+	}
+
+	var items []tui.VersionItem
+	for _, c := range versions.choices {
+		items = append(items, tui.VersionItem{Version: c.Version, Hint: c.Hint, IsDefault: c.Default})
+	}
+	final, err := tea.NewProgram(tui.NewVersionPickerModel("select "+name+" version", items)).Run()
+	if err != nil {
+		return "", false, err
+	}
+	picker := final.(tui.VersionPickerModel)
+	if picker.Aborted() {
+		return "", false, nil
+	}
+	return picker.Selected(), true, nil
 }
 
 func runStatusDashboard() error {
