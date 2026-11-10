@@ -101,7 +101,7 @@ func applyRHCLFlags() {
 // addRHCLFlags registers the rhcl addon flags on a command.
 func addRHCLFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagRHCLIndex, "rhcl-index", "", "rhcl addon: operator index image to install from, skipping the Red Hat catalog lookup")
-	cmd.Flags().BoolVar(&flagRHCLConsolePlugin, "rhcl-console-plugin", false, "rhcl addon: run the RHCL console plugin beside the Console and load it")
+	cmd.Flags().BoolVar(&flagRHCLConsolePlugin, "rhcl-console-plugin", false, "rhcl addon: have the operator deploy its console plugin, by giving the cluster a ClusterVersion, and load it into the Console")
 }
 
 // applyInstanceFlags forwards addon instance-creation flags to the addon registry.
