@@ -10,6 +10,7 @@
   "crio_minor": "5.0",
   "kubernetes_version": "1.36.5",
   "payloads": {
-    "x86_64": "quay.io/okd/scos-release@sha256:de68403c50493b218da189de0ea250943b20330342d51ce2e00601730c0088dc"
+    "x86_64": "quay.io/okd/scos-release@sha256:de68403c50493b218da189de0ea250943b20330342d51ce2e00601730c0088dc",
+    "aarch64": "ghcr.io/jasonmadigan/oinc-okd/okd-release-arm64@sha256:399647ccd0d45545b098bfcd9dc7bf32bb19a0b0656334f7c8dd6f0452283ae2"
   }
 }
