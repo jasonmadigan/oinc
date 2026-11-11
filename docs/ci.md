@@ -15,6 +15,7 @@ Builds MicroShift and Console container images. **Manual dispatch only** (`workf
 - 5.0 first builds RPMs from `images/5.0.json` on each native runner; COPR overrides are rejected for this source-locked version
 - Pushes to `ghcr.io/jasonmadigan/oinc`
 - A `console` job builds native Console images for architectures upstream does not publish (currently 5.0 arm64) and pushes them to `ghcr.io/jasonmadigan/oinc-console`. Custom OKD builds skip it. See [Console images](images.md#console-images).
+- `version=5.0-okd-arm64` runs only the `okd-arm64` job, which rebuilds the 5.0 lock's OKD components for arm64 (about 90 minutes) and pushes them to `ghcr.io/jasonmadigan/oinc-okd`. Its digest goes into the lock before 5.0 images are built. See [arm64 OKD components](images.md#arm64-okd-components).
 
 ### E2E smoke (`.github/workflows/e2e.yml`)
 
@@ -25,7 +26,7 @@ End-to-end smoke test. **Runs on pull requests** (and manual dispatch), concurre
 - Creates a cluster with the matrix version; create waits for the Console, so this also checks it starts on amd64
 - Asserts the Console serves the default `ocp` branding and an absolute docs base URL
 - Asserts skopeo is present in the oinc image
-- On 5.0, checks the embedded release lock, MicroShift/base/CRI-O minor versions and the node's Kubernetes version
+- On 5.0, checks the embedded release lock, MicroShift/base/CRI-O minor versions, the node's Kubernetes version and that MicroShift's `greenboot-healthcheck` unit passes
 - Asserts `oinc load-image` rejects a ref missing host-side
 - Builds a trivial local image, loads it with `oinc load-image`, runs a pod from it with `imagePullPolicy: IfNotPresent`
 - Re-runs the load to prove idempotence

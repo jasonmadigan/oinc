@@ -11,7 +11,7 @@ type OCPVersion struct {
 	RequiresPullSecret bool              // Red Hat preview; excluded from OKD release channels
 	Version            string            // minor version or full OKD tag
 	MicroShiftTag      string            // "4.18.0-okd-scos.9" (arch appended at runtime)
-	ImageTag           string            // optional OINC build revision for the same payload
+	ImageTag           string            // image tag where it is not the MicroShift tag (Red Hat previews)
 	Minor              string            // "4.18"
 	ConsoleImages      map[string]string // per-arch console refs; amd64, pinned by digest, is the fallback
 	APIBranch          string            // "release-4.18"
@@ -54,18 +54,23 @@ var catalogue = []OCPVersion{
 	},
 	{
 		Version:       "5.0",
-		MicroShiftTag: "5.0.0-okd-scos.0",
-		ImageTag:      "5.0.0-okd-scos.0-oinc.1",
+		MicroShiftTag: "5.0.0-okd-scos.4",
 		Minor:         "5.0",
-		// console from the 5.0.0-okd-scos.0 payload, plus a native arm64 rebuild
+		// console from the 5.0.0-okd-scos.4 payload, plus a native arm64 rebuild
 		// of the same commit (images/Containerfile.console)
 		ConsoleImages: map[string]string{
-			"amd64": "quay.io/okd/scos-content@sha256:947e41d0b4af41f65107639d7ed9c49aacd5162b59cc2b79d48ad1d37ad701bf",
-			"arm64": ConsoleRegistry + ":5.0.0-okd-scos.0-arm64",
+			"amd64": "quay.io/okd/scos-content@sha256:be3b11ee9d96b959c8ba899ca00b25df8cf142dcb12ceb2722285d334d33e02d",
+			"arm64": ConsoleRegistry + ":5.0.0-okd-scos.4-arm64",
 		},
 		APIBranch: "release-5.0",
 		Arches:    []string{"amd64", "arm64"},
 	},
+}
+
+// payloads republished under an oinc revision, keyed by okd tag. the revision
+// is the image to run; the payload's own tag names a superseded build
+var imageRevisions = map[string]string{
+	"5.0.0-okd-scos.0": "5.0.0-okd-scos.0-oinc.1",
 }
 
 var redHatCatalogue = []OCPVersion{
@@ -122,9 +127,6 @@ func Resolve(v string) (OCPVersion, error) {
 		for _, ver := range catalogue {
 			if ver.Version == match[1] {
 				ver.Version = v
-				if v != ver.MicroShiftTag {
-					ver.ImageTag = ""
-				}
 				ver.MicroShiftTag = v
 				return ver, nil
 			}
@@ -168,7 +170,20 @@ func (v OCPVersion) imageTag() string {
 	if v.ImageTag != "" {
 		return v.ImageTag
 	}
+	if revision, ok := imageRevisions[v.MicroShiftTag]; ok {
+		return revision
+	}
 	return v.MicroShiftTag
+}
+
+// payloadTag maps a published image tag, less its arch, to its okd payload.
+func payloadTag(tag string) string {
+	for payload, revision := range imageRevisions {
+		if tag == revision {
+			return payload
+		}
+	}
+	return tag
 }
 
 // ConsoleImageRef returns the console image and platform for this host.
@@ -212,6 +227,6 @@ func ResolveFromImage(image string) (OCPVersion, bool) {
 			return v, true
 		}
 	}
-	v, err := Resolve(tag)
+	v, err := Resolve(payloadTag(tag))
 	return v, err == nil
 }

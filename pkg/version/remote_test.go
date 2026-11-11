@@ -185,3 +185,19 @@ func TestPublishedReplacementRequiresItsOwnArchitecture(t *testing.T) {
 		t.Fatalf("wrong replacement selection: %+v, %v", arm, err)
 	}
 }
+
+// a newer payload outranks a revision of an older one
+func TestChannelPrefersNewerPayloadOverRevision(t *testing.T) {
+	versions := versionsFromTags([]string{"5.0.0-okd-scos.0-arm64", "5.0.0-okd-scos.0-oinc.1-arm64", "5.0.0-okd-scos.4-arm64"})
+	var got []string
+	for _, v := range versions {
+		got = append(got, v.imageTag())
+	}
+	if want := []string{"5.0.0-okd-scos.4", "5.0.0-okd-scos.0-oinc.1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("published image tags = %v, want %v", got, want)
+	}
+	latest, err := latestFor(versions, "5.0", "arm64", false)
+	if err != nil || latest.Version != "5.0.0-okd-scos.4" {
+		t.Fatalf("latest = %+v, %v", latest, err)
+	}
+}

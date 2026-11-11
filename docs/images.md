@@ -4,9 +4,11 @@
 
 Images published at `ghcr.io/jasonmadigan/oinc`.
 
-Tags normally follow `<okd-version>-<arch>`. A replacement build can have a catalogue-pinned revision: 5.0 uses `5.0.0-okd-scos.0-oinc.1-<arch>` to avoid reusing the earlier mixed-version image.
+Tags follow `<okd-version>-<arch>`. A payload that had to be rebuilt gets a revision recorded in the CLI: `5.0.0-okd-scos.0` is served from `5.0.0-okd-scos.0-oinc.1-<arch>`, which replaced a mixed-version image.
 
 Native Console builds are published at `ghcr.io/jasonmadigan/oinc-console` with the same tag pattern, naming the OKD payload the Console came from. See [Console images](#console-images).
+
+arm64 builds of OKD components are published under `ghcr.io/jasonmadigan/oinc-okd`. See [arm64 OKD components](#arm64-okd-components).
 
 For the separate, manually built Red Hat MicroShift rc0/rc1 container experiment, see [OCP release candidates](ocp-release-candidates.md). It uses kindnet and a runtime pull secret; it is not part of the OKD publishing workflow or CLI selectors.
 
@@ -40,7 +42,7 @@ All paths fail unless the installed `microshift-release-info` carries the `OKD_V
 |-|-|-|
 | `OCP_VERSION` | OCP version for openshift deps mirror URL | `5.0` |
 | `DEPS_VERSION` | dependency mirror override; for 5.x it must equal `OCP_VERSION`, as must the installed MicroShift and CRI-O RPM minors | `5.0` |
-| `OKD_VERSION` | expected OKD tag, asserted against installed `microshift-release-info` | `5.0.0-okd-scos.0` |
+| `OKD_VERSION` | expected OKD tag, asserted against installed `microshift-release-info` | `5.0.0-okd-scos.4` |
 | `RELEASE_TAG` | microshift-io GitHub release tag to install RPM tarballs from | `4.20.0_g153ff0ca9_4.20.0_okd_scos.16` |
 | `TARBALL_SHA256` | expected sha256 of the downloaded RPM tarball | `536d3081...` |
 | `COPR_PIN` | exact RPM version-release to pin in the COPR repo | `5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9` |
@@ -57,6 +59,7 @@ Select exactly one of `RELEASE_TAG`, `COPR_PIN` or `LOCAL_RPMS=1`. `TARBALL_SHA2
 4. **Firewall rules** -- trusted zone for pod CIDR (10.42.0.0/16) and link-local (169.254.169.1), public zone for API (6443) and etcd (2379/2380)
 5. **DNS config** -- base domain set to `127.0.0.1.nip.io`
 6. **skopeo** for importing images into CRI-O, guaranteed present
+7. **No storage driver** (`storage.driver: none`): the container has no LVM, and without the setting MicroShift's health check (`greenboot-healthcheck`) fails looking for a volume group. Images built before `5.0.0-okd-scos.4` lack it and report that unit as failed
 
 The OpenShift dependencies RPM mirror (`mirror.openshift.com`) provides packages needed by MicroShift at install time. This repo is removed after install.
 
@@ -69,7 +72,7 @@ Matrix builds all version/arch combinations in parallel. Each job:
 2. Builds the final image with podman on a native runner (amd64 on `ubuntu-24.04`, arm64 on `ubuntu-24.04-arm`), installing the source-built RPMs, release tarballs or pinned COPR packages
 3. Pushes to GHCR
 
-Optional `version` input filters to a single OCP version.
+Optional `version` input filters to a single OCP version. `5.0-okd-arm64` runs only the [arm64 OKD components](#arm64-okd-components) job.
 
 ## Console images
 
@@ -80,7 +83,7 @@ Each catalogue entry runs the Console from its OKD payload, pinned by digest in 
 | 4.20 | `4.20.0-okd-scos.16` | `quay.io/okd/scos-content@sha256:23f8ab55...` | `7504ae43`, `release-4.20` |
 | 4.21 | `4.21.0-okd-scos.ec.15` | `quay.io/okd/scos-content@sha256:7b386635...` | `4b8da822`, `main` |
 | 4.22 | `4.22.0-okd-scos.ec.16` | `quay.io/okd/scos-content@sha256:923f8700...` | `f6de0e73`, `release-4.22` |
-| 5.0 | `5.0.0-okd-scos.0` | `quay.io/okd/scos-content@sha256:947e41d0...` | `e15ec744`, `release-5.0` |
+| 5.0 | `5.0.0-okd-scos.4` | `quay.io/okd/scos-content@sha256:be3b11ee...` | `6ebef742`, `release-5.0` |
 
 A newer payload selected by full tag or channel reuses its minor's pinned Console.
 
@@ -90,7 +93,7 @@ These images are amd64-only. Up to 4.22 they are based on CentOS Stream 9, and A
 Fatal glibc error: CPU does not support x86-64-v3
 ```
 
-5.0 therefore also pins a native arm64 rebuild, `ghcr.io/jasonmadigan/oinc-console:5.0.0-okd-scos.0-arm64`. `images/Containerfile.console` builds it. It rebuilds `bridge` from the upstream image's source commit with the CentOS Stream 9 Go toolset, matching upstream's el9 builder, and copies the frontend assets unchanged from the upstream image. The build fails unless the upstream binary's version string names `CONSOLE_COMMIT`. The image workflow's `console` job publishes it; custom OKD builds skip that job and reuse the minor's Console.
+5.0 therefore also pins a native arm64 rebuild, `ghcr.io/jasonmadigan/oinc-console:5.0.0-okd-scos.4-arm64`. `images/Containerfile.console` builds it. It rebuilds `bridge` from the upstream image's source commit with the CentOS Stream 9 Go toolset, matching upstream's el9 builder, and copies the frontend assets unchanged from the upstream image. The build fails unless the upstream binary's version string names `CONSOLE_COMMIT`. The image workflow's `console` job publishes it; custom OKD builds skip that job and reuse the minor's Console.
 
 To find the inputs for a payload:
 
@@ -110,7 +113,7 @@ docker build -f images/Containerfile.console \
 
 ## Building a newer OKD release
 
-For 5.0, update `images/5.0.json`, the matching workflow matrix fields and the catalogue's replacement image tag. Custom COPR inputs are rejected for source-locked entries. Build and verify both architectures before publishing the new revision.
+For 5.0, update `images/5.0.json`, the matching workflow matrix fields (build and Console) and the catalogue pin; a test fails while the lock and catalogue disagree. A new payload needs its [arm64 components](#arm64-okd-components) first. Custom COPR inputs are rejected for source-locked entries. Build and verify both architectures before merging the CLI change.
 
 Other minors still accept the `version`, `okd_version`, `copr_pin` and `deps_version` workflow inputs together. Verify the RPM's source release and CRI-O requirements as well as its OKD payload tag. The image build's version guards still apply. For tarball releases, update the matrix's `release_tag` and architecture-specific checksums.
 
@@ -118,16 +121,24 @@ Remote selectors discover published payloads for supported minors. Replacement i
 
 ## Release-aligned source builds
 
-No community MicroShift 5.0 RPM release was available on 28 September 2026. COPR's builds for the stable OKD 5.0 payload compile MicroShift main (5.1), so 5.0 now uses the upstream packaging toolchain with explicit inputs in `images/5.0.json`:
+Red Hat ships its MicroShift GA RPMs through subscription repositories, and there is no community 5.0 RPM release: COPR's builds for OKD 5.0 payloads compile MicroShift main (5.1). 5.0 therefore uses the upstream packaging toolchain with explicit inputs in `images/5.0.json`:
 
-- MicroShift commit `07ab806795491479323b6084c4375770e3c98266`, from `release-5.0` and tagged [`5.0.0-rc.2-202609111451.p0`](https://github.com/openshift/microshift/releases/tag/5.0.0-rc.2-202609111451.p0). Its [Go module pins Kubernetes 1.36.3](https://github.com/openshift/microshift/blob/07ab806795491479323b6084c4375770e3c98266/go.mod), matching the OKD payload. This is a community rebuild of rc2 source, not an official MicroShift GA binary.
-- microshift-io packaging commit `b520d54da1bc5f0e48a99057c5cb018b2893b7d0` and Go 1.26.7.
-- Both architectures' OKD 5.0 payloads pinned by digest. The ARM payload is microshift-io's rebuild.
+- MicroShift commit `0f0de241c7978084be7656d979cf11860eca08b2`, tagged [`5.0.0-202610291612.p0`](https://github.com/openshift/microshift/releases/tag/5.0.0-202610291612.p0): the 5.0.0 release, and the same commit as rc.8. Its [Go module pins Kubernetes 1.36.5](https://github.com/openshift/microshift/blob/0f0de241c7978084be7656d979cf11860eca08b2/go.mod). This is a community build of that source, not Red Hat's binary.
+- OKD `5.0.0-okd-scos.4`. The 190 components it shares with the OCP 5.0.0 payload are built from the same commits; later OKD 5.0 builds have moved on.
+- microshift-io packaging commit `403446cd64348cf924a7ac817c3787c05aa78ef4` and Go 1.26.10, the version Red Hat's 5.0.0 binary reports.
+- Both architectures' payloads pinned by digest. The arm64 one is [built here](#arm64-okd-components).
 - The 5.0 dependency mirror; the source RPM requires `cri-o >= 5.0.0, < 5.1.0`.
+
+To find the OKD build that matches an OCP release, compare the commits of the components both payloads carry:
+
+```bash
+oc adm release info --commits quay.io/okd/scos-release:<okd-version>
+oc adm release info --commits quay.io/openshift-release-dev/ocp-release:<ocp-version>-x86_64
+```
 
 `images/build-rpms.py` fetches the pinned packaging commit and adapts its recipes to check out an exact MicroShift commit, use digest-qualified payloads for both architectures, and pin Go. It fails if the expected recipe changes. It retains the upstream community packaging changes and kindnet integration. The build timestamp is fixed so both architectures have the same RPM version.
 
-The payload does not supply every image reference: the pinned packaging supplies kindnet, and its [replacement script](https://github.com/microshift-io/microshift/blob/b520d54da1bc5f0e48a99057c5cb018b2893b7d0/src/image/prebuild.sh) retains the original `lvms_operator` release-info entry. This Containerfile installs neither LVMS nor TopoLVM. Compare the components actually used rather than claiming every release-info digest comes from OKD.
+The payload does not supply every image reference: the pinned packaging supplies kindnet, and its [replacement script](https://github.com/microshift-io/microshift/blob/403446cd64348cf924a7ac817c3787c05aa78ef4/src/image/prebuild.sh) retains the original `lvms_operator` release-info entry. This Containerfile installs neither LVMS nor TopoLVM. Compare the components actually used rather than claiming every release-info digest comes from OKD.
 
 Run on each native Linux architecture, or through Docker on an ARM Mac:
 
@@ -136,14 +147,32 @@ python3 images/build-rpms.py images/5.0.json --runtime docker --output images/rp
 # Use arm64 or amd64 to match the native builder.
 docker build -f images/Containerfile \
   --build-arg OCP_VERSION=5.0 \
-  --build-arg OKD_VERSION=5.0.0-okd-scos.0 \
+  --build-arg OKD_VERSION=5.0.0-okd-scos.4 \
   --build-arg LOCAL_RPMS=1 \
-  -t ghcr.io/jasonmadigan/oinc:5.0.0-okd-scos.0-oinc.1-arm64 images/
+  -t ghcr.io/jasonmadigan/oinc:5.0.0-okd-scos.4-arm64 images/
 ```
 
 The output directory must be empty apart from `.gitkeep`; use a fresh directory or remove only previously generated RPM output before rebuilding. Generated RPMs are git-ignored. The final image records the lock at `/usr/share/oinc/release.json`. Base-image and dependency repositories can still change, so this pins the release composition rather than promising byte-identical rebuilds.
 
-The replacement tag leaves the original published experiment intact. The updated CLI skips the original tag in channel discovery and uses the replacement for both `--version 5.0` and `--version 5.0.0-okd-scos.0`. A cached old image therefore cannot satisfy a fresh create. Publish both replacement architectures and run the 5.0 e2e jobs before merging or releasing the CLI.
+Publish both architectures and run the 5.0 e2e jobs before merging or releasing a CLI that selects a new payload.
+
+## arm64 OKD components
+
+OKD publishes its payload for amd64 only. microshift-io rebuilds the components MicroShift runs for arm64, but only for the newest OKD tag, which since October 2026 is a 5.1 one. For a source-locked version oinc builds them itself:
+
+```bash
+gh workflow run images.yml --ref <branch> -f version=5.0-okd-arm64
+```
+
+The `okd-arm64` job runs `images/build-okd.py` on a native arm64 runner and takes about 90 minutes. The script runs microshift-io's `src/okd/build_images.sh` from the lock's `packaging_commit`, adapted to:
+
+- check out each component at the commit the lock's amd64 payload was built from, where upstream builds branch heads
+- derive the arm64 release image from that payload by digest
+- publish straight to `ghcr.io/jasonmadigan/oinc-okd`, without upstream's staging registry
+
+It fails if the upstream recipe no longer matches, or if any published image cannot be pulled without credentials, which is how CRI-O pulls them. It prints the commit each repository was built at and the digest to record as `payloads.aarch64`. `build-rpms.py` refuses a lock that does not pin both payloads by digest.
+
+Rerunning it for a payload that is already published only prints the digest. The amd64 image uses OKD's own payload and needs none of this.
 
 ## Adding a new version
 

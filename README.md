@@ -31,14 +31,14 @@ That's it. You get a single-node cluster with the OpenShift Console on `localhos
 
 | OCP | OKD component payload | Console | Architectures |
 |-|-|-|-|
-| 5.0 (default) | 5.0.0-okd-scos.0 | 5.0.0-okd-scos.0 payload | amd64, arm64 |
+| 5.0 (default) | 5.0.0-okd-scos.4 | 5.0.0-okd-scos.4 payload | amd64, arm64 |
 | 4.22 (pre-release) | 4.22.0-okd-scos.ec.16 | 4.22.0-okd-scos.ec.16 payload | amd64, arm64 |
 | 4.21 (pre-release) | 4.21.0-okd-scos.ec.15 | 4.21.0-okd-scos.ec.15 payload | amd64, arm64 |
 | 4.20 | 4.20.0-okd-scos.16 | 4.20.0-okd-scos.16 payload | amd64, arm64 |
 
 All entries use **OKD MicroShift** builds. The OCP minor identifies the matching Console and API branch; it does not select a Red Hat OCP payload.
 
-The 5.0 image builds MicroShift from a pinned `release-5.0` commit (the upstream rc2 source), with Kubernetes 1.36.3, CRI-O 5.0 RPMs and OKD 5.0 payload images. This is a community build, not a Red Hat MicroShift GA binary. Its `-oinc.1` image revision replaces the earlier 5.1-based experiment; the CLI excludes the superseded image from remote selection. See [release inputs](images/5.0.json) and [build details](docs/images.md#release-aligned-source-builds).
+The 5.0 image builds MicroShift from the commit Red Hat released as 5.0.0, with Kubernetes 1.36.5, CRI-O 5.0 RPMs and the images of OKD `5.0.0-okd-scos.4`, whose components are built from the same commits as OCP 5.0.0. It is a community build of that source, not Red Hat's MicroShift binary, and needs no pull secret. OKD publishes amd64 only, so arm64 runs oinc's rebuild of those components. See [release inputs](images/5.0.json) and [build details](docs/images.md#release-aligned-source-builds).
 
 The 5.0 replacement images are published for amd64 and arm64. Native amd64 Docker/Podman smoke tests and local native ARM checks passed on 29 September 2026.
 
@@ -51,7 +51,7 @@ oinc version list --remote                  # published oinc images and architec
 oinc create --version 4@latest              # newest stable OKD build in supported 4.x minors
 oinc create --version @latest               # newest stable OKD build in any supported minor
 oinc create --version 5.0@next               # opt into 5.0 builds, including ec/rc
-oinc create --version 5.0.0-okd-scos.0        # exact OKD payload
+oinc create --version 5.0.0-okd-scos.4        # exact OKD payload
 ```
 
 `@latest` excludes all `ec` and `rc` tags, including those under 4.x. `@next` includes them. These selectors query oinc's GHCR images for the host architecture; new upstream RPMs must first be built into an oinc image. They resolve once at create/switch time and do not update an existing cluster. See [version management](docs/versions.md).

@@ -3,3 +3,4 @@ CLAUDE.md
 PLAN.md
 images/rpms/*
 !images/rpms/.gitkeep
+__pycache__/

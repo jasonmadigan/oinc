@@ -5,7 +5,7 @@
 Each supported OCP version is an entry in `pkg/version/version.go`. An entry coordinates:
 
 - **MicroShift image tag** -- the pre-built MicroShift container image on GHCR
-- **Replacement image tag** -- optional OINC revision for rebuilding a payload without reusing an old cached image
+- **Replacement image tag** -- OINC revision of a payload that was rebuilt (`imageRevisions`), so an old cached image is not reused
 - **Console images** -- the OKD payload's Console by digest, and any native arm64 rebuild
 - **openshift/api branch** -- for fetching the ConsolePlugin CRD during Console setup
 
@@ -15,7 +15,7 @@ Each entry pins its OKD payload's Console by digest (`ConsoleImages`) rather tha
 
 The last **stable** entry in the catalogue is the default. Entries whose OKD tags contain `ec` or `rc` are pre-release and are never the default. `oinc create` selects this pin unless a version is explicitly chosen; the interactive picker marks prereleases.
 
-This classification describes the OKD payload. The 5.0 runtime is built from pinned MicroShift 5.0 rc2 source, with Kubernetes 1.36.3 and CRI-O 5.0 packages. It is not an official MicroShift GA build. The inputs are recorded in `images/5.0.json`.
+This classification describes the OKD payload. The 5.0 runtime is built from the MicroShift commit released as 5.0.0, with Kubernetes 1.36.5 and CRI-O 5.0 packages. It is a community build of that source, not Red Hat's binary. The inputs are recorded in `images/5.0.json`.
 
 ## Selecting newer builds
 
@@ -23,7 +23,7 @@ This classification describes the OKD payload. The 5.0 runtime is built from pin
 |-|-|
 | `4.20` | Offline catalogue pin for that minor |
 | `4.22` | Explicit opt-in to the catalogue's pinned 4.22 prerelease |
-| `5.0.0-okd-scos.0` | Exact OKD payload selection, using its catalogue replacement image and 5.0 Console/API settings |
+| `5.0.0-okd-scos.4` | Exact OKD payload selection, with its minor's Console/API settings |
 | `@latest` or `latest` | Newest published stable build across supported minors |
 | `4@latest` | Newest published stable build in supported 4.x minors |
 | `4.20@latest` | Newest published stable build within 4.20 |
@@ -36,7 +36,9 @@ This classification describes the OKD payload. The 5.0 runtime is built from pin
 
 Remote lookups require network access and report errors instead of silently using an older pin. Minor pins and full tags resolve offline, though pulling a missing image still needs the registry. A full tag does not prove its image has been published.
 
-For `5.0.0-okd-scos.0`, both the minor and full-payload selectors use the replacement image tag `5.0.0-okd-scos.0-oinc.1-<arch>`. Remote discovery excludes the original mixed 5.1/5.0 image and requires the replacement to exist for the requested architecture. Until it is published, `5.0@latest` reports no stable image rather than selecting the old build. Existing clusters are not changed automatically; recreate them to use the replacement. Older CLIs do not know this replacement mapping.
+`5.0.0-okd-scos.0` was first published as a mixed 5.1/5.0 image, then rebuilt as `5.0.0-okd-scos.0-oinc.1-<arch>`. That selector uses the rebuild, and remote discovery ignores the original tag and counts only architectures published under the revision. Older CLIs do not know this mapping.
+
+5.0 moved from that payload to `5.0.0-okd-scos.4`. A cluster created before the move keeps running and is reported as `5.0.0-okd-scos.0`; `oinc switch 5.0` recreates it on the new pin.
 
 Both `create --version` and `switch` accept these selectors. A channel resolves once to an exact tag; an existing cluster is not automatically upgraded. `switch` resolves the selector before deleting the old cluster, so an unavailable channel leaves it intact. It remains a delete-and-create operation, not an in-place upgrade.
 

@@ -77,6 +77,16 @@ jobs:
           EXPECTED_KUBERNETES=$(python3 -c 'import json; print("v" + json.load(open("images/5.0.json"))["kubernetes_version"])')
           test "$("$PREFIX" kubectl --context oinc get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')" = "$EXPECTED_KUBERNETES"
 
+      - name: Assert MicroShift's own health check passes
+        if: matrix.version == '5.0'
+        run: |
+          for _ in $(seq 1 60); do
+            STATE=$("$PREFIX" "$CR" exec oinc systemctl is-active greenboot-healthcheck || true)
+            [[ "$STATE" != "activating" ]] && break
+            sleep 5
+          done
+          test "$STATE" = "active"
+
       - name: Reject a ref missing host-side
         run: |
           ! "$PREFIX" bin/oinc load-image --runtime "$CR" localhost/oinc-e2e:absent

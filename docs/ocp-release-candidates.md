@@ -130,7 +130,7 @@ With the local images removed, a default `oinc create` on this host pulled both 
 
 ## Release-aligned 5.0 build
 
-The replacement uses the inputs in `images/5.0.json`: MicroShift `07ab806795491479323b6084c4375770e3c98266` (5.0 rc2 source, Kubernetes 1.36.3), pinned microshift-io packaging, the OKD 5.0 payloads by digest and CRI-O from the 5.0 mirror. Both architectures use the same source and build timestamp. The old COPR build is not an input. This remains community MicroShift with kindnet, and is not an official Red Hat GA binary or full OCP.
+This build has since been replaced by the [GA-aligned one](#50-ga). It used MicroShift `07ab806795491479323b6084c4375770e3c98266` (5.0 rc2 source, Kubernetes 1.36.3), pinned microshift-io packaging, the OKD `5.0.0-okd-scos.0` payloads by digest and CRI-O from the 5.0 mirror. Both architectures use the same source and build timestamp. The old COPR build is not an input. This remains community MicroShift with kindnet, and is not an official Red Hat GA binary or full OCP.
 
 The image revision is `5.0.0-okd-scos.0-oinc.1-<arch>`. Original tags remain historical artifacts; the new CLI excludes them from channel discovery. Both replacement architectures were published on 29 September 2026 in [build 36587185381](https://github.com/jasonmadigan/oinc/actions/runs/36587185381). Native amd64 Docker and Podman smoke tests then passed in [E2E run 36586769472](https://github.com/jasonmadigan/oinc/actions/runs/36586769472).
 
@@ -138,7 +138,7 @@ Verified locally on 28 September 2026 on native arm64 through Docker/OrbStack, u
 
 | Check | Result |
 |-|-|
-| Embedded release lock matches `images/5.0.json` | Passed |
+| Embedded release lock matches `images/5.0.json` as it was then | Passed |
 | MicroShift RPM and base release are 5.0; node runs Kubernetes 1.36.3 | Passed |
 | CRI-O RPM is from the 5.0 stream | Passed; package `5.0.0-202609212354.p2.gee69985.assembly.stream.el9`, upstream runtime 1.36.6 |
 | Node Ready and all nine platform pods ready, including OLM | Passed |
@@ -148,6 +148,34 @@ Verified locally on 28 September 2026 on native arm64 through Docker/OrbStack, u
 | Console proxy ConfigMap create/read/delete; missing CSRF header rejected with 403 | Passed |
 
 The local image ID was `sha256:c81cf19f12de59dcac2a1804e5bd36f3d46de93e0385b73d65df03d3c1a8da65`. This run did not repeat the browser walkthrough or addon suite. CRI-O's upstream patch version differs from Kubernetes within the 1.36 line; the dependency mirror remains mutable. Build rejection checks also confirmed that neither the old 5.1 dependency mirror nor a 5.1 COPR pin can be used for a 5.0 image.
+
+## 5.0 GA
+
+Checked on 11 November 2026.
+
+Red Hat released MicroShift 5.0.0 as [`5.0.0-202610291612.p0`](https://github.com/openshift/microshift/releases/tag/5.0.0-202610291612.p0). The tag is commit `0f0de241c7978084be7656d979cf11860eca08b2`, the same commit as rc.8, and vendors Kubernetes 1.36.5. The OCP 5.0.0 payloads carry the same component digests as rc.8 on both architectures:
+
+| Release image | Digest |
+|-|-|
+| `quay.io/openshift-release-dev/ocp-release:5.0.0-x86_64` | `sha256:5d7ed8b3e98bc3a10c50f36f07262a962d59ad2d3ea5fb4935ff10c408c02e55` |
+| `quay.io/openshift-release-dev/ocp-release:5.0.0-aarch64` | `sha256:30489c24feeb07ade3f7e4b0139225780828bbc5473446ed2e055c95d3cdc2ea` |
+
+The GA RPMs are not on the public mirror. Its `latest-5.0` still holds rc.8, as `latest-4.20` to `latest-4.22` still hold their last RCs. They ship through the subscription repositories and in `registry.redhat.io/openshift5/microshift-bootc-rhel9:v5.0.0` (RHEL 9.8, arm64 `sha256:e1a74529bb7d13ca96025bb469696858de2b04e361f9af251ccf565fe22730ae`), which needs a pull secret. With oinc's kindnet copied in, that image booted in a container on arm64/OrbStack: `MicroShift Version: 5.0.0`, node Ready, nine platform pods, Red Hat's greenboot check passed. It has no `microshift-olm` package; the experiment took the OLM manifests from the public rc.8 RPM, whose image digests are the GA payload's. This was a manual experiment and is not wired into the CLI.
+
+### OKD counterpart
+
+No OKD build is named after the GA. Comparing the source commits of the components both payloads carry (`oc adm release info --commits`):
+
+| OKD build | Created | Kubernetes | Components at OCP 5.0.0's commit |
+|-|-|-|-|
+| `5.0.0-okd-scos.3` | 21 October | 1.36.5 | 152 of 190 |
+| `5.0.0-okd-scos.4` | 28 October | 1.36.5 | 190 of 190 |
+| `5.0.0-okd-scos.5` | 5 November | 1.36.5 | 173 of 190 |
+| `5.0.0-okd-scos.6` | 9 November | 1.36.5 | 161 of 190 |
+
+[`5.0.0-okd-scos.4`](https://github.com/okd-project/okd/releases/tag/5.0.0-okd-scos.4) is `quay.io/okd/scos-release@sha256:de68403c50493b218da189de0ea250943b20330342d51ce2e00601730c0088dc`. Its Console, `quay.io/okd/scos-content@sha256:be3b11ee9d96b959c8ba899ca00b25df8cf142dcb12ceb2722285d334d33e02d`, is openshift/console `6ebef74231451a17dc69e0e6df5d85d6b8877efd`, the commit in the OCP payload.
+
+`5.0` now builds MicroShift from the GA commit with this payload's images. It remains a community build with kindnet: not Red Hat's binary, and not full OCP.
 
 ## Reproduce the experimental build
 
