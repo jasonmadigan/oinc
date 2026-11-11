@@ -47,7 +47,7 @@ Container host address varies by runtime:
 
 The newest stable entry is the default; `ec` and `rc` tags are opt-in. `--version` accepts a catalogue minor, a full OKD tag for a supported minor, or a remote channel. `@latest` selects stable published images only; `@next` includes prereleases. Both can be scoped to a major or minor, such as `4@latest` or `5.0@next`. Remote discovery is in `pkg/version/remote.go`.
 
-Stability here refers to the OKD payload tag. The 5.0 MicroShift binary is a community build of pinned 5.0 rc2 source with the same Kubernetes 1.36.3 as that payload. `images/5.0.json` fixes the source, packaging and payload inputs. The new `-oinc.1` image tag avoids reusing a cached 5.1-based image; remote discovery counts only architectures published under the replacement tag.
+Stability here refers to the OKD payload tag. The 5.0 MicroShift binary is a community build of the commit released as MicroShift 5.0.0, with the same Kubernetes 1.36.5 as its OKD payload. `images/5.0.json` fixes the source, packaging and payload inputs. A payload that had to be rebuilt keeps its tag and gains a revision (`imageRevisions` in `pkg/version`); remote discovery counts only architectures published under the revision.
 
 ## Kubeconfig
 

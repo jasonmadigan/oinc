@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "OCP minor to build (all = every catalogue pin)"
+        description: "OCP minor to build (all = every catalogue pin; 5.0-okd-arm64 = the arm64 OKD components for the 5.0 lock)"
         type: choice
-        options: ["all", "4.20", "4.21", "4.22", "5.0", "ocp-4.23"]
+        options: ["all", "4.20", "4.21", "4.22", "5.0", "ocp-4.23", "5.0-okd-arm64"]
         default: "all"
       okd_version:
         description: "Optional full OKD tag to build instead of the catalogue pin (requires version, copr_pin and deps_version)"
@@ -64,15 +64,15 @@ jobs:
             copr_pin: "5.0.0_202605120437_g8e93344a3_4.22.0_okd_scos.ec.16-1.el9"
             arch: arm64
           - version: "5.0"
-            okd_version: "5.0.0-okd-scos.0"
+            okd_version: "5.0.0-okd-scos.4"
             source_lock: "images/5.0.json"
-            image_tag: "5.0.0-okd-scos.0-oinc.1"
+            image_tag: "5.0.0-okd-scos.4"
             deps_version: "5.0"
             arch: amd64
           - version: "5.0"
-            okd_version: "5.0.0-okd-scos.0"
+            okd_version: "5.0.0-okd-scos.4"
             source_lock: "images/5.0.json"
-            image_tag: "5.0.0-okd-scos.0-oinc.1"
+            image_tag: "5.0.0-okd-scos.4"
             deps_version: "5.0"
             arch: arm64
 
@@ -200,9 +200,9 @@ jobs:
       matrix:
         include:
           - version: "5.0"
-            okd_version: "5.0.0-okd-scos.0"
-            console_image: "quay.io/okd/scos-content@sha256:947e41d0b4af41f65107639d7ed9c49aacd5162b59cc2b79d48ad1d37ad701bf"
-            console_commit: "e15ec744673924852b341bb517d605c6c6989413"
+            okd_version: "5.0.0-okd-scos.4"
+            console_image: "quay.io/okd/scos-content@sha256:be3b11ee9d96b959c8ba899ca00b25df8cf142dcb12ceb2722285d334d33e02d"
+            console_commit: "6ebef74231451a17dc69e0e6df5d85d6b8877efd"
             arch: arm64
 
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
@@ -264,6 +264,56 @@ jobs:
             sleep 10
           done
           exit 1
+
+  # okd publishes its payload for amd64 only. this rebuilds the components
+  # microshift runs for arm64, at the commits the locked amd64 payload was built
+  # from. selected on its own; the digest it prints is then pinned in the lock
+  okd-arm64:
+    if: inputs.version == '5.0-okd-arm64'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SOURCE_LOCK: images/5.0.json
+      REGISTRY: ghcr.io/${{ github.repository }}-okd
+    steps:
+      - name: Reject OKD overrides
+        env:
+          OVERRIDES: ${{ inputs.okd_version }}${{ inputs.copr_pin }}${{ inputs.deps_version }}
+        run: test -z "$OVERRIDES"
+      - uses: actions/checkout@v5
+      # same clean-up as microshift-io's builder, which needs the room
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman skopeo
+          curl -fsSL --retry 5 https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux-arm64-rhel9.tar.gz \
+            | sudo tar xz -C /usr/bin oc
+      - name: Login to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # one auth file for podman, skopeo and oc
+          AUTH="$HOME/.config/containers/auth.json"
+          mkdir -p "$(dirname "$AUTH")"
+          printf '%s' "$GH_TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin --authfile "$AUTH"
+          echo "REGISTRY_AUTH_FILE=$AUTH" >> "$GITHUB_ENV"
+      - name: Build and push components
+        run: |
+          python3 images/build-okd.py "$SOURCE_LOCK" --registry "$REGISTRY" | tee build-okd.out
+          { echo '```'; tail -n 20 build-okd.out; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   ocp-preview:
     if: inputs.version == 'ocp-4.23' || inputs.version == 'all' || inputs.version == ''

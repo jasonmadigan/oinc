@@ -176,23 +176,16 @@ func versionsFromTags(tags []string) []OCPVersion {
 // mistaken for the corrected build. Only count architectures actually published
 // under that tag; the original tag remains recognisable for existing clusters.
 func resolvePublishedTag(tag string) (OCPVersion, error) {
-	for _, v := range catalogue {
-		if tag == v.imageTag() {
-			v.Version = v.MicroShiftTag
-			return v, nil
-		}
+	if payload := payloadTag(tag); payload != tag {
+		return Resolve(payload)
 	}
 	if !okdTagPattern.MatchString(tag) {
 		return OCPVersion{}, fmt.Errorf("unrecognised published image tag %s", tag)
 	}
-	v, err := Resolve(tag)
-	if err != nil {
-		return OCPVersion{}, err
+	if revision, ok := imageRevisions[tag]; ok {
+		return OCPVersion{}, fmt.Errorf("image tag %s was superseded by %s", tag, revision)
 	}
-	if v.ImageTag != "" {
-		return OCPVersion{}, fmt.Errorf("image tag %s was superseded by %s", tag, v.ImageTag)
-	}
-	return v, nil
+	return Resolve(tag)
 }
 
 // Treat numbered stable builds as later than ec/rc, retaining numeric ordering

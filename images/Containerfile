@@ -115,10 +115,13 @@ RUN CNP_VER=v1.8.0 && \
     tar xzf /tmp/cni.tgz -C /usr/libexec/cni && \
     rm -f /tmp/cni.tgz
 
-# dns base domain
+# dns base domain. no storage driver: there is no lvm in the container, and
+# microshift's health check fails looking for a volume group otherwise
 RUN mkdir -p /etc/microshift/config.d && \
     printf 'dns:\n    baseDomain: "127.0.0.1.nip.io"\n' \
-      > /etc/microshift/config.d/00-dns.yaml
+      > /etc/microshift/config.d/00-dns.yaml && \
+    printf 'storage:\n    driver: none\n' \
+      > /etc/microshift/config.d/10-storage.yaml
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

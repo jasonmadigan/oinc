@@ -2,43 +2,25 @@
 """Build release-aligned RPMs using pinned microshift-io packaging."""
 
 import argparse
-import json
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import uuid
 
-
-def run(*args, **kwargs):
-    subprocess.run(args, check=True, **kwargs)
-
-
-def replace(path, old, new):
-    text = path.read_text()
-    if text.count(old) != 1:
-        raise RuntimeError(f"Pinned packaging no longer matches the expected recipe: {path}")
-    path.write_text(text.replace(old, new))
+from pinned import checkout_packaging, load_lock, replace, run
 
 
 def build(lock_path, output, runtime):
     if output.exists() and any(path.name != ".gitkeep" for path in output.iterdir()):
         raise RuntimeError(f"RPM output directory must be empty: {output}")
-    lock = json.loads(lock_path.read_text())
+    lock = load_lock(lock_path, ["x86_64", "aarch64"])
     source = lock["microshift_commit"]
     suffix = f'{lock["microshift_minor"]}-{source[:12]}'
     srpm_image = f"localhost/oinc-srpm:{suffix}"
     rpm_image = f"localhost/oinc-rpms:{suffix}"
 
     with tempfile.TemporaryDirectory(prefix="oinc-rpms-") as directory:
-        root = Path(directory)
-        run("git", "init", "-q", directory)
-        run("git", "-C", directory, "fetch", "-q", "--depth", "1",
-            "https://github.com/microshift-io/microshift.git", lock["packaging_commit"])
-        run("git", "-C", directory, "checkout", "-q", "--detach", "FETCH_HEAD")
-        actual = subprocess.check_output(["git", "-C", directory, "rev-parse", "HEAD"], text=True).strip()
-        if actual != lock["packaging_commit"]:
-            raise RuntimeError("Packaging commit mismatch")
+        root = checkout_packaging(lock, directory)
 
         srpm = root / "packaging/srpm.Containerfile"
         # Upstream defaults the other architecture to latest and clones a branch.
@@ -70,6 +52,9 @@ def build(lock_path, output, runtime):
             "OKD_RELEASE_IMAGE_X86_64": lock["payloads"]["x86_64"],
             "OKD_RELEASE_IMAGE_AARCH64": lock["payloads"]["aarch64"],
             "BUILD_TIMESTAMP": lock["build_timestamp"],
+            # upstream's Makefile defaults, for the topolvm package oinc leaves out
+            "VG_NAME": "myvg1",
+            "SPARE_GB": "0",
         }.items():
             args += ["--build-arg", f"{name}={value}"]
         run(runtime, "build", "-t", srpm_image, *args, "-f", str(srpm), directory)
