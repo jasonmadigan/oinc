@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 
 from pinned import checkout_packaging, load_lock, output, replace, run
@@ -52,7 +53,7 @@ def check_anonymous(release, registry):
     for image in sorted({release} | {image for image in images if image.startswith(registry + "/")}):
         try:
             run("skopeo", "inspect", "--no-creds", "--raw", f"docker://{image}", capture_output=True)
-        except Exception:
+        except subprocess.CalledProcessError:
             private.append(image)
     if private:
         raise RuntimeError("Not anonymously pullable:\n" + "\n".join(private))
