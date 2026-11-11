@@ -177,6 +177,47 @@ No OKD build is named after the GA. Comparing the source commits of the componen
 
 `5.0` now builds MicroShift from the GA commit with this payload's images. It remains a community build with kindnet: not Red Hat's binary, and not full OCP.
 
+### Release-aligned build
+
+The inputs are in `images/5.0.json`: the GA commit, microshift-io packaging `403446cd64348cf924a7ac817c3787c05aa78ef4`, Go 1.26.10, both payloads by digest and CRI-O from the 5.0 mirror. The RPMs are `5.0.0_202610291612_g0f0de241_5.0.0_okd_scos.4-1.el9`.
+
+OKD publishes amd64 only, and microshift-io's arm64 rebuild stops at `5.0.0-okd-scos.1`: its nightly builds the newest OKD tag, a 5.1 one since October. The `okd-arm64` job rebuilt the 14 components MicroShift can use, at the payload's commits, in [run 43014052759](https://github.com/jasonmadigan/oinc/actions/runs/43014052759) (60 minutes). The result is `ghcr.io/jasonmadigan/oinc-okd/okd-release-arm64@sha256:399647ccd0d45545b098bfcd9dc7bf32bb19a0b0656334f7c8dd6f0452283ae2`.
+
+microshift-io's recipe builds kube-proxy from `openshift/sdn`, whose last commit is from October 2024 and vendors Kubernetes 1.30.5. That is what the arm64 `5.0.0-okd-scos.0` images run. This rebuild takes kube-proxy from the payload's Kubernetes commit, and it reports `v1.36.5`.
+
+The images were published from `f6c1372` in [run 43022942050](https://github.com/jasonmadigan/oinc/actions/runs/43022942050), all anonymously pullable:
+
+| Image | Digest |
+|-|-|
+| `ghcr.io/jasonmadigan/oinc:5.0.0-okd-scos.4-amd64` | `sha256:1ca8dbe2cc48a99b5fe191cce9c3c91454e9477af4f1f83ddf4dcc6b1c5bc8ff` |
+| `ghcr.io/jasonmadigan/oinc:5.0.0-okd-scos.4-arm64` | `sha256:8adcf3bdc5710a2d1db20f73c1fa4e09218026f206046f40c95a85380da707b9` |
+| `ghcr.io/jasonmadigan/oinc-console:5.0.0-okd-scos.4-arm64` | `sha256:5a46564d1a3ce00101bc46f723af57a306bb852a8e9fe2107e800364e1d04b87` |
+
+Verified on 11 November 2026 on native arm64 through Docker/OrbStack. The local images were removed first, so an unmodified `oinc create --addons kuadrant@latest,mcp-gateway --kuadrant-devportal --metallb-address-pool auto --gateway-api-gateway`, with no `--version`, pulled the published ones:
+
+| Check | Result |
+|-|-|
+| Pulled images carry the published digests | Passed |
+| Embedded release lock matches `images/5.0.json`; MicroShift and CRI-O RPMs are 5.0 | Passed; CRI-O package `5.0.0-202611041759.p2.g0d163d6.assembly.stream.el9`, upstream runtime 1.36.8 |
+| Node Ready on Kubernetes v1.36.5 | Passed |
+| All nine platform pods ready, on image references from the installed release info | Passed; the arm64 components come from `oinc-okd` |
+| kube-proxy reports v1.36.5 | Passed |
+| `greenboot-healthcheck` passes and no unit is failed | Passed |
+| `oinc load-image`, Deployment from the loaded image | Passed |
+| Internal service DNS and HTTP; HTTP through a Route on host port 9080 | Passed |
+| Native arm64 Console running with no restarts; page, six initial JS/CSS assets, `branding: ocp` | Passed; `v6.0.6-27219-g6ebef74231` |
+| Console proxy reads of nodes, Deployments and Pods; ConfigMap create/read/delete; POST without the CSRF token returns 403 | Passed |
+| Browser: Deployment details page renders live data | Passed on the second load |
+| The e2e `instances` assertions, and HTTP through the default Gateway's MetalLB address from the node | Passed |
+| Reinstalling the addons with the same options | Passed |
+| A cluster on `5.0.0-okd-scos.0`: reported as that payload, default create refused with the `oinc switch 5.0` hint, and the switch recreates it on `5.0.0-okd-scos.4` | Passed |
+
+On amd64, the e2e smoke legs (docker and podman) booted 5.0 from the published image, checked the release composition and the health check, loaded an image and ran a pod, in [E2E run 43022949826](https://github.com/jasonmadigan/oinc/actions/runs/43022949826).
+
+The first load of that Deployment page in a fresh browser profile showed `Model does not exist`; it rendered once the Console had cached API discovery. The `5.0.0-okd-scos.0` Console does the same against this cluster, so this is not new.
+
+The `5.0.0-okd-scos.0` images report `greenboot-healthcheck` as failed: MicroShift's health check looks for a volume group and the container has no `vgs`. The image now sets `storage.driver: none`, which the Red Hat preview image already did.
+
 ## Reproduce the experimental build
 
 [images/Containerfile.ocp-experimental](../images/Containerfile.ocp-experimental) is separate from the normal OKD image and publishing workflow. It accepts `RC=0` or `RC=1` and requires an existing oinc image as its networking source. The historical source was built with the command below before the 5.x minor guards were added. The current Containerfile intentionally rejects this 5.1/5.0 mix; use a retained historical image to repeat that experiment:

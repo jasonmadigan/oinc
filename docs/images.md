@@ -170,6 +170,8 @@ The `okd-arm64` job runs `images/build-okd.py` on a native arm64 runner and take
 - derive the arm64 release image from that payload by digest
 - publish straight to `ghcr.io/jasonmadigan/oinc-okd`, without upstream's staging registry
 
+kube-proxy is built from the payload's Kubernetes commit, as the amd64 payload builds it. Upstream's recipe takes it from `openshift/sdn`, which stopped at Kubernetes 1.30. Two inputs are not the payload's: the CentOS Stream 9 base image comes from the `openshift/images` branch head, for which the payload records no commit, and the router carries HAProxy compiled from haproxy.org source by upstream's recipe.
+
 It fails if the upstream recipe no longer matches, or if any published image cannot be pulled without credentials, which is how CRI-O pulls them. It prints the commit each repository was built at and the digest to record as `payloads.aarch64`. `build-rpms.py` refuses a lock that does not pin both payloads by digest.
 
 Rerunning it for a payload that is already published only prints the digest. The amd64 image uses OKD's own payload and needs none of this.

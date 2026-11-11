@@ -40,7 +40,7 @@ All entries use **OKD MicroShift** builds. The OCP minor identifies the matching
 
 The 5.0 image builds MicroShift from the commit Red Hat released as 5.0.0, with Kubernetes 1.36.5, CRI-O 5.0 RPMs and the images of OKD `5.0.0-okd-scos.4`, whose components are built from the same commits as OCP 5.0.0. It is a community build of that source, not Red Hat's MicroShift binary, and needs no pull secret. OKD publishes amd64 only, so arm64 runs oinc's rebuild of those components. See [release inputs](images/5.0.json) and [build details](docs/images.md#release-aligned-source-builds).
 
-The 5.0 replacement images are published for amd64 and arm64. Native amd64 Docker/Podman smoke tests and local native ARM checks passed on 29 September 2026.
+The 5.0 images are published for amd64 and arm64. Native amd64 Docker/Podman smoke tests and local native ARM checks passed on 11 November 2026.
 
 Each version runs the Console from its OKD payload, pinned by digest. Up to 4.22 it is amd64-only and emulated on ARM. 5.0's Console cannot run under that emulation, so ARM hosts get a native build of the same source. See [Console images](docs/images.md#console-images).
 
