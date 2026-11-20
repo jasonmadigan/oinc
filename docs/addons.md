@@ -2,7 +2,7 @@
 
 ## Overview
 
-The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons layer extra infrastructure on top for specific use cases.
+The base oinc cluster includes MicroShift + OLM + Console + ConsolePlugin CRD + the `monitoring.coreos.com` CRDs ([monitoring APIs](architecture.md#monitoring-apis)). Addons layer extra infrastructure on top for specific use cases.
 
 ## Available addons
 
@@ -54,7 +54,7 @@ Charts are downloaded first with `helm pull` into a temporary directory, then in
 
 ### Download retries
 
-Release hosts and registries fail for tens of seconds at a time with 5xx, 429 or reset connections. Every download oinc makes (addon manifests, Helm charts and the ConsolePlugin CRD) is retried three times, 2, 5 and 10 seconds apart, and each retry is logged with its cause. Curl runs with `--fail`, so an error page is never applied as a manifest. When the retries are spent, oinc fails with the last error.
+Release hosts and registries fail for tens of seconds at a time with 5xx, 429 or reset connections. Every download oinc makes (addon manifests, Helm charts, and the ConsolePlugin and monitoring CRDs) is retried three times, 2, 5 and 10 seconds apart, and each retry is logged with its cause. Curl runs with `--fail`, so an error page is never applied as a manifest. When the retries are spent, oinc fails with the last error.
 
 ## MCP Gateway
 

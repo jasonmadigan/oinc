@@ -6,7 +6,7 @@
   (..)
 ```
 
-MicroShift under the hood, with Console, OLM, and ConsolePlugin CRD out of the box.
+MicroShift under the hood, with Console, OLM, the ConsolePlugin CRD and the Prometheus Operator CRDs out of the box.
 
 > [!WARNING]
 > This project is largely the product of coffee and vibe coding. It works, but set your expectations accordingly.
@@ -15,7 +15,7 @@ MicroShift under the hood, with Console, OLM, and ConsolePlugin CRD out of the b
 oinc create
 ```
 
-That's it. You get a single-node cluster with the OpenShift Console on `localhost:9000`, OLM running, and the ConsolePlugin CRD available -- close enough to real OCP for local dev work.
+That's it. You get a single-node cluster with the OpenShift Console on `localhost:9000`, OLM running, and the ConsolePlugin and monitoring CRDs OpenShift serves available -- close enough to real OCP for local dev work.
 
 ## Features
 
@@ -149,7 +149,7 @@ Commands show styled progress in a terminal (spinners, checkmarks, boxed output)
 
 ## Addons
 
-The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD. Addons layer extra infrastructure on top:
+The base cluster includes MicroShift + OLM + Console + ConsolePlugin CRD + the `monitoring.coreos.com` CRDs ([monitoring APIs](docs/architecture.md#monitoring-apis)). Addons layer extra infrastructure on top:
 
 | Addon          | What it provides                          | Install method               |
 | -------------- | ----------------------------------------- | ---------------------------- |

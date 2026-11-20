@@ -66,6 +66,13 @@ jobs:
       - name: Assert skopeo ships in the oinc image
         run: '"$PREFIX" "$CR" exec oinc sh -c "command -v skopeo"'
 
+      - name: Assert the monitoring CRDs OpenShift serves are established
+        run: |
+          for kind in alertmanagerconfigs alertmanagers podmonitors probes prometheuses prometheusrules servicemonitors thanosrulers; do
+            "$PREFIX" kubectl --context oinc wait --for=condition=Established --timeout=60s "crd/$kind.monitoring.coreos.com"
+          done
+          "$PREFIX" kubectl --context oinc get servicemonitors.v1.monitoring.coreos.com,podmonitors.v1.monitoring.coreos.com -A
+
       - name: Verify the 5.0 release composition
         if: matrix.version == '5.0'
         run: |

@@ -14,7 +14,7 @@ type OCPVersion struct {
 	ImageTag           string            // image tag where it is not the MicroShift tag (Red Hat previews)
 	Minor              string            // "4.18"
 	ConsoleImages      map[string]string // per-arch console refs; amd64, pinned by digest, is the fallback
-	APIBranch          string            // "release-4.18"
+	APIBranch          string            // "release-4.18", of openshift/api and cluster-monitoring-operator
 	Arches             []string          // supported architectures
 }
 

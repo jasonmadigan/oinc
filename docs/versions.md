@@ -7,7 +7,7 @@ Each supported OCP version is an entry in `pkg/version/version.go`. An entry coo
 - **MicroShift image tag** -- the pre-built MicroShift container image on GHCR
 - **Replacement image tag** -- OINC revision of a payload that was rebuilt (`imageRevisions`), so an old cached image is not reused
 - **Console images** -- the OKD payload's Console by digest, and any native arm64 rebuild
-- **openshift/api branch** -- for fetching the ConsolePlugin CRD during Console setup
+- **OpenShift release branch** (`APIBranch`) -- for fetching the ConsolePlugin CRD from `openshift/api` and the monitoring CRDs from `openshift/cluster-monitoring-operator`
 
 All catalogue builds are OKD MicroShift. OCP version names identify compatibility with the Console and API branch. For the separate Red Hat rc0/rc1 artifacts and local test findings, see [OCP release candidates](ocp-release-candidates.md).
 
@@ -64,6 +64,7 @@ Or manually:
 
 2. Check that upstream resources exist:
    - `openshift/api` branch `release-{version}`
+   - `openshift/cluster-monitoring-operator` branch `release-{version}`, with the CRD manifests `pkg/oinc/monitoring.go` lists
    - openshift-deps mirror directory `{version}-el9-beta`
    - The release payload's `console` image (`oc adm release info --image-for=console`), to pin by digest. Check its architectures and that it starts under emulation on an ARM host; if not, add a native arm64 build (see [Console images](images.md#console-images))
 
@@ -91,11 +92,12 @@ When a new version is added, these things may need updating:
 | Component | Where | What to check |
 |-|-|-|
 | Console CRD | `pkg/oinc/console.go` | Fetched from `openshift/api` at the release branch, adapts automatically |
+| Monitoring CRDs | `pkg/oinc/monitoring.go` | Fetched from `openshift/cluster-monitoring-operator` at the release branch; check its `manifests/` still has the listed files |
 | Console image | `pkg/version/version.go`, `.github/workflows/images.yml` | Payload Console digest in `ConsoleImages`, plus the workflow's `console` matrix for a native arm64 build |
 | Gateway API CRDs | `pkg/addons/gatewayapi.go` | Version pinned independently, not tied to OCP version |
 | Addon versions | `pkg/addons/*.go` | cert-manager, metallb, etc. are pinned independently |
 
-Only the ConsolePlugin CRD URL derives from `APIBranch`. Image references and addon versions have their own pins and need separate compatibility checks.
+Only the ConsolePlugin and monitoring CRD URLs derive from `APIBranch`. Image references and addon versions have their own pins and need separate compatibility checks.
 
 ## Red Hat preview
 

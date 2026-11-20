@@ -135,6 +135,10 @@ func CreateSteps(ctx context.Context, opts CreateOpts) (string, []*tui.Step) {
 		&tui.Step{Name: "waiting for pods", Run: func() error {
 			return cluster.WaitForReady(ctx, raw, 60, 5*time.Second)
 		}},
+		&tui.Step{Name: "installing monitoring CRDs", Run: func() error {
+			logger := slog.New(slog.NewTextHandler(devNull{}, nil))
+			return setupMonitoringCRDs(ctx, raw, ver, logger)
+		}},
 		&tui.Step{Name: "setting up console", Run: func() error {
 			logger := slog.New(slog.NewTextHandler(devNull{}, nil))
 			return setupConsole(rt, raw, ver, opts.Console, logger)
@@ -247,6 +251,11 @@ func createPlain(ctx context.Context, opts CreateOpts, logger *slog.Logger) erro
 		return fmt.Errorf("cluster readiness: %w", err)
 	}
 
+	logger.Info("installing monitoring CRDs", "release", ver.APIBranch)
+	if err := setupMonitoringCRDs(ctx, raw, ver, logger); err != nil {
+		return fmt.Errorf("monitoring CRDs: %w", err)
+	}
+
 	logger.Info("setting up console")
 	if err := setupConsole(rt, raw, ver, opts.Console, logger); err != nil {
 		return fmt.Errorf("console setup: %w", err)
@@ -340,6 +349,9 @@ func installAddons(ctx context.Context, sorted []addons.Addon, cfg *addons.Confi
 	if err := addons.ValidateCluster(ctx, sorted, cfg); err != nil {
 		return err
 	}
+	if err := ensureMonitoringCRDs(ctx, cfg); err != nil {
+		return fmt.Errorf("monitoring CRDs: %w", err)
+	}
 
 	logger := cfg.Logger
 	for _, a := range sorted {
@@ -383,6 +395,15 @@ func AddonInstallSteps(ctx context.Context, addonList string, kc []byte, rt *run
 	}
 
 	var steps []*tui.Step
+	add, err := monitoringCRDsToAdd(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(add) > 0 {
+		steps = append(steps, &tui.Step{Name: "adding monitoring CRDs", Run: func() error {
+			return applyMonitoringCRDs(ctx, cfg.DynamicClient, cfg.OpenShiftAPIBranch, add, cfg.Logger)
+		}})
+	}
 	for _, a := range sorted {
 		a := a
 		// skip ready addons, unless options were set for them this

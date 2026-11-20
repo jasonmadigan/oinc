@@ -28,8 +28,9 @@ type Config struct {
 	IngressHost     string
 	IngressHTTPPort int
 	IngressErr      error
-	// OpenShift minor the cluster corresponds to (4.23) and the openshift/api
-	// branch that goes with it, for addons that install OpenShift API types.
+	// OpenShift minor the cluster corresponds to (4.23) and the release branch
+	// of openshift/api and cluster-monitoring-operator that goes with it, for
+	// installing OpenShift API types.
 	// empty when the cluster image is not a known version
 	OpenShiftVersion   string
 	OpenShiftAPIBranch string
