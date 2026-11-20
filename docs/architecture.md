@@ -42,7 +42,7 @@ Container host address varies by runtime:
 - MicroShift image tag (e.g. `4.21.0-okd-scos.ec.15`)
 - Optional replacement image tag (`ImageTag`), separating an OINC build revision from its OKD payload version
 - Console image tag (e.g. `4.21`), or per-architecture Console images from 5.0
-- openshift/api branch for CRD fetch (e.g. `release-4.21`)
+- OpenShift release branch for CRD fetches from `openshift/api` and `openshift/cluster-monitoring-operator` (e.g. `release-4.21`)
 - Supported architectures
 
 The newest stable entry is the default; `ec` and `rc` tags are opt-in. `--version` accepts a catalogue minor, a full OKD tag for a supported minor, or a remote channel. `@latest` selects stable published images only; `@next` includes prereleases. Both can be scoped to a major or minor, such as `4@latest` or `5.0@next`. Remote discovery is in `pkg/version/remote.go`.
@@ -54,6 +54,14 @@ Stability here refers to the OKD payload tag. The 5.0 MicroShift binary is a com
 MicroShift generates a kubeconfig inside the container at `/var/lib/microshift/resources/kubeadmin/<hostname>/kubeconfig`. oinc merges this into the single file named by `KUBECONFIG`, or `~/.kube/config` when unset. It sets the current context to `oinc`; a colon-separated list of kubeconfig paths is not supported by this helper.
 
 The CLI sets the container hostname to `127.0.0.1.nip.io` and maps host port 6443 to the API server. The image separately sets the MicroShift DNS base domain to the same name.
+
+## Monitoring APIs
+
+Every OpenShift cluster serves the Prometheus Operator API, `monitoring.coreos.com`, and operators built for OpenShift can need it to start: kuadrant-operator caches ServiceMonitors and PodMonitors as it starts. MicroShift has none of it. Once the cluster is up, before the Console and any addon, `oinc create` applies the eight `monitoring.coreos.com` CRDs the cluster's release installs, from `openshift/cluster-monitoring-operator` at its release branch. The `monitoring.openshift.io` CRDs in the same manifests are left out, as only cluster-monitoring-operator acts on them.
+
+No Prometheus Operator runs, so objects of these kinds are stored and nothing acts on them. `AlertmanagerConfig` is served at `v1alpha1` only, the version it is stored at. OpenShift also serves `v1beta1` through a conversion webhook in `openshift-monitoring`, which oinc does not run; with that webhook configured and absent, a stored object could not be converted, and its namespace could not be deleted.
+
+`oinc addon install` adds any of these CRDs that a cluster created by an earlier oinc lacks, and leaves the ones it has alone.
 
 ## Console sidecar
 

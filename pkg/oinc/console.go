@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jasonmadigan/oinc/pkg/download"
 	"github.com/jasonmadigan/oinc/pkg/kubeconfig"
 	"github.com/jasonmadigan/oinc/pkg/pullsecret"
 	"github.com/jasonmadigan/oinc/pkg/runtime"
@@ -31,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -144,34 +142,7 @@ func setupConsole(rt *runtime.Runtime, kubeconfig []byte, ver version.OCPVersion
 }
 
 func applyConsolePluginCRD(dynClient dynamic.Interface, ver version.OCPVersion, logger *slog.Logger) error {
-	body, err := download.URL(context.TODO(), logger, ver.ConsolePluginCRDURL())
-	if err != nil {
-		return err
-	}
-
-	obj := &unstructured.Unstructured{}
-	if err := yaml.NewYAMLOrJSONDecoder(strings.NewReader(string(body)), len(body)).Decode(obj); err != nil {
-		return fmt.Errorf("decoding CRD YAML: %w", err)
-	}
-
-	crdGVR := schema.GroupVersionResource{
-		Group:    "apiextensions.k8s.io",
-		Version:  "v1",
-		Resource: "customresourcedefinitions",
-	}
-
-	existing, err := dynClient.Resource(crdGVR).Get(context.TODO(), obj.GetName(), metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			_, err = dynClient.Resource(crdGVR).Create(context.TODO(), obj, metav1.CreateOptions{})
-			return err
-		}
-		return err
-	}
-
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	_, err = dynClient.Resource(crdGVR).Update(context.TODO(), obj, metav1.UpdateOptions{})
-	return err
+	return applyCRD(context.TODO(), dynClient, logger, ver.ConsolePluginCRDURL(), "consoleplugins.console.openshift.io")
 }
 
 func createConsoleRBAC(client kubernetes.Interface) error {

@@ -212,7 +212,10 @@ func TestInstallAddonsChecksTheClusterBeforeInstallingAnything(t *testing.T) {
 		&recordingAddon{name: "dependency", installed: &installed},
 		&recordingAddon{name: "picky", installed: &installed, clusterErr: errors.New("cluster has no pull secret")},
 	}
-	cfg := &addons.Config{Logger: slog.New(slog.NewTextHandler(devNull{}, nil))}
+	cfg := &addons.Config{
+		DynamicClient: fakeCRDClient(monitoringCRDObjects("present")...),
+		Logger:        slog.New(slog.NewTextHandler(devNull{}, nil)),
+	}
 
 	err := installAddons(context.Background(), list, cfg)
 	if err == nil || !strings.Contains(err.Error(), "picky") || !strings.Contains(err.Error(), "cluster has no pull secret") {
