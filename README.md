@@ -168,7 +168,7 @@ Dependencies are resolved automatically. Installing `kuadrant` will pull in `gat
 
 With recent `kuadrant@latest` builds, `mcp-gateway` reuses Kuadrant's bundled MCP controller and CRDs and configures the gateway instance. Older Kuadrant releases get the standalone Helm install. See [MCP Gateway addon details](docs/addons.md#mcp-gateway) for values overlays and recovery from a duplicate CRD install.
 
-MCP Gateway readiness requires a programmed Gateway with an address; include `--metallb-address-pool auto` unless a pool already exists. Consumer-created Istio Gateways need a Service overlay to opt into scoped MetalLB. See the [example and migration guidance](docs/addons.md#consumer-created-istio-gateways) when upgrading from v0.4.3.
+MCP Gateway readiness requires a programmed Gateway with an address; include `--metallb-address-pool auto` unless a pool already exists. The MetalLB addon installs Istio GatewayClass defaults so consumer-created Istio Gateways also receive addresses. See [Gateway defaults and migration](docs/addons.md#consumer-created-istio-gateways).
 
 ```bash
 # at create time

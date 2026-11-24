@@ -2,6 +2,7 @@ package addons
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -229,6 +231,87 @@ func TestMetalLBInstallScopesComponentsWhenAddressPoolConfigured(t *testing.T) {
 		if args := manifestArgs(t, applied, tt.kind, tt.name, tt.container); !slices.Contains(args, arg) {
 			t.Errorf("%s/%s container %s args = %v, want %q", tt.kind, tt.name, tt.container, args, arg)
 		}
+	}
+}
+
+func TestMetalLBInstallDefaultsConsumerIstioGateways(t *testing.T) {
+	for _, pool := range []string{"", "auto"} {
+		t.Run("pool="+pool, func(t *testing.T) {
+			fakeMetalLBInstallCommands(t, lbClassFixture)
+			client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme,
+				fakeWorkload("Deployment", "controller", map[string]any{"name": "controller"}),
+				fakeWorkload("DaemonSet", "speaker", map[string]any{"name": "speaker"}),
+			)
+			cfg := &Config{
+				DynamicClient: client,
+				Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			for range 2 {
+				if err := (&metalLB{addressPool: pool}).Install(context.Background(), cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			defaults, err := client.Resource(configMapGVR).Namespace("istio-system").List(context.Background(), metav1.ListOptions{
+				LabelSelector: "gateway.istio.io/defaults-for-class=istio",
+			})
+			if err != nil || len(defaults.Items) != 1 {
+				t.Fatalf("Istio GatewayClass defaults: got %v, %v; want one ConfigMap", defaults, err)
+			}
+			overlay, _, _ := unstructured.NestedString(defaults.Items[0].Object, "data", "service")
+			var service corev1.Service
+			if err := yaml.Unmarshal([]byte(overlay), &service); err != nil {
+				t.Fatal(err)
+			}
+			if service.Spec.LoadBalancerClass == nil || *service.Spec.LoadBalancerClass != metalLBClass {
+				t.Fatalf("consumer Gateway Service class: got %v, want %s", service.Spec.LoadBalancerClass, metalLBClass)
+			}
+		})
+	}
+}
+
+func TestIstioGatewayDefaultsPreserveExistingConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		overlay string
+		count   int
+		wantErr bool
+	}{
+		{"compatible", "spec:\n  loadBalancerClass: oinc.io/metallb\n  externalTrafficPolicy: Local\n", 1, false},
+		{"missing class", "spec:\n  externalTrafficPolicy: Local\n", 1, true},
+		{"other class", "spec:\n  loadBalancerClass: other.example/lb\n", 1, true},
+		{"invalid yaml", "spec: [", 1, true},
+		{"duplicate defaults", "spec:\n  loadBalancerClass: oinc.io/metallb\n", 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := dynamicfake.NewSimpleDynamicClient(kscheme.Scheme)
+			ctx := context.Background()
+			for n := range tc.count {
+				cm := &unstructured.Unstructured{Object: map[string]any{
+					"apiVersion": "v1", "kind": "ConfigMap",
+					"metadata": map[string]any{
+						"name": fmt.Sprintf("custom-%d", n), "namespace": "istio-system",
+						"labels": map[string]any{"gateway.istio.io/defaults-for-class": "istio"},
+					},
+					"data": map[string]any{"service": tc.overlay, "deployment": "spec:\n  replicas: 2\n"},
+				}}
+				if _, err := client.Resource(configMapGVR).Namespace("istio-system").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := &Config{DynamicClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			if err := ensureIstioGatewayDefaults(ctx, cfg); (err != nil) != tc.wantErr {
+				t.Fatalf("ensureIstioGatewayDefaults = %v, wantErr %v", err, tc.wantErr)
+			}
+			for _, action := range client.Actions() {
+				if action.GetResource() == configMapGVR && action.GetVerb() != "get" && action.GetVerb() != "list" && action.GetVerb() != "create" {
+					t.Fatalf("existing defaults were modified: %v", action)
+				}
+			}
+			cms, _ := client.Resource(configMapGVR).Namespace("istio-system").List(ctx, metav1.ListOptions{})
+			if len(cms.Items) != tc.count {
+				t.Fatalf("created duplicate defaults: got %d, want %d", len(cms.Items), tc.count)
+			}
+		})
 	}
 }
 

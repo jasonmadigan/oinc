@@ -203,6 +203,31 @@ jobs:
           test "$(kubectl --context oinc -n consumer-gateways get svc example-gateway-istio \
             -o jsonpath='{.spec.loadBalancerClass}')" = "oinc.io/metallb"
 
+      - name: Assert consumer Gateways get addresses without infrastructure parameters
+        run: |
+          for namespace in consumer-defaults-a consumer-defaults-b; do
+            kubectl --context oinc create namespace "$namespace"
+            kubectl --context oinc apply -f - <<EOF
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: consumer
+            namespace: ${namespace}
+          spec:
+            gatewayClassName: istio
+            listeners:
+            - name: http
+              port: 80
+              protocol: HTTP
+          EOF
+            kubectl --context oinc -n "$namespace" wait gateway.gateway.networking.k8s.io/consumer \
+              --for=condition=Programmed --timeout=120s
+            test -n "$(kubectl --context oinc -n "$namespace" get svc consumer-istio \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+            test "$(kubectl --context oinc -n "$namespace" get svc consumer-istio \
+              -o jsonpath='{.spec.loadBalancerClass}')" = "oinc.io/metallb"
+          done
+
       - name: Assert router-default kept its service-lb ingress
         run: |
           test -z "$(kubectl --context oinc -n openshift-ingress get svc router-default \
@@ -229,6 +254,8 @@ jobs:
           kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io kuadrant-ingressgateway -o yaml || true
           kubectl --context oinc -n gateway-system get gateway.gateway.networking.k8s.io mcp-gateway -o yaml || true
           kubectl --context oinc -n consumer-gateways get gateway.gateway.networking.k8s.io,svc -o yaml || true
+          kubectl --context oinc -n istio-system get configmaps -l gateway.istio.io/defaults-for-class=istio -o yaml || true
+          kubectl --context oinc get gateway.gateway.networking.k8s.io,svc -A -o wide || true
 
   # rhdh + postgres + microshift is memory-heavy, so this runs as its own
   # single leg (docker, pinned version) rather than in the smoke matrix

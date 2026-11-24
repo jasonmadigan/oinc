@@ -121,6 +121,52 @@ func (m *metalLB) Install(ctx context.Context, cfg *Config) error {
 	if err := ensureContainerArg(ctx, cfg, daemonSetGVR, "metallb-system", "speaker", "speaker", arg); err != nil {
 		return fmt.Errorf("scoping metallb speaker to %s: %w", metalLBClass, err)
 	}
+	return ensureIstioGatewayDefaults(ctx, cfg)
+}
+
+func ensureIstioGatewayDefaults(ctx context.Context, cfg *Config) error {
+	if err := ensureNamespace(ctx, cfg, "istio-system"); err != nil {
+		return err
+	}
+	client := cfg.DynamicClient.Resource(configMapGVR).Namespace("istio-system")
+	defaults, err := client.List(ctx, metav1.ListOptions{
+		LabelSelector: "gateway.istio.io/defaults-for-class=istio",
+	})
+	if err != nil {
+		return fmt.Errorf("checking Istio GatewayClass defaults: %w", err)
+	}
+	if len(defaults.Items) > 1 {
+		return fmt.Errorf("multiple Istio GatewayClass defaults ConfigMaps in istio-system; keep one with service.spec.loadBalancerClass: %s", metalLBClass)
+	}
+	if len(defaults.Items) == 1 {
+		cm := defaults.Items[0]
+		overlay, _, _ := unstructured.NestedString(cm.Object, "data", "service")
+		var service struct {
+			Spec struct {
+				LoadBalancerClass string `json:"loadBalancerClass"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(overlay), &service); err != nil {
+			return fmt.Errorf("reading Istio GatewayClass defaults %s: %w", cm.GetName(), err)
+		}
+		if service.Spec.LoadBalancerClass != metalLBClass {
+			return fmt.Errorf("Istio GatewayClass defaults istio-system/%s must set service.spec.loadBalancerClass: %s", cm.GetName(), metalLBClass)
+		}
+		return nil
+	}
+	cm := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name":      "oinc-gateway-defaults",
+			"namespace": "istio-system",
+			"labels":    map[string]any{"gateway.istio.io/defaults-for-class": "istio"},
+		},
+		"data": map[string]any{"service": "spec:\n  loadBalancerClass: " + metalLBClass + "\n"},
+	}}
+	if _, err := client.Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("creating Istio GatewayClass defaults: %w", err)
+	}
 	return nil
 }
 
