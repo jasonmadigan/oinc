@@ -168,7 +168,7 @@ Dependencies are resolved automatically. Installing `kuadrant` will pull in `gat
 
 With recent `kuadrant@latest` builds, `mcp-gateway` reuses Kuadrant's bundled MCP controller and CRDs and configures the gateway instance. Older Kuadrant releases get the standalone Helm install. See [MCP Gateway addon details](docs/addons.md#mcp-gateway) for values overlays and recovery from a duplicate CRD install.
 
-MCP Gateway readiness requires a programmed Gateway with an address; include `--metallb-address-pool auto` unless a pool already exists. Consumer-created Istio Gateways need a Service overlay to opt into scoped MetalLB. See the [example and migration guidance](docs/addons.md#consumer-created-istio-gateways) when upgrading from v0.4.3.
+MCP Gateway readiness requires a programmed Gateway with an address; include `--metallb-address-pool auto` unless a pool already exists. The MetalLB addon installs Istio GatewayClass defaults so consumer-created Istio Gateways also receive addresses. See [Gateway defaults and migration](docs/addons.md#consumer-created-istio-gateways).
 
 ```bash
 # at create time
@@ -202,7 +202,7 @@ oinc create --addons kuadrant@latest \
   --gateway-api-gateway
 ```
 
-`--metallb-address-pool` also takes an explicit range (`172.17.0.200-172.17.0.220`) or CIDR. Defaults are unchanged: without the flags the addons behave exactly as before. See [docs/addons.md](docs/addons.md) for the mechanics (portal field verification, gateway address via the class-scoped metallb).
+`--metallb-address-pool` also takes an explicit range (`172.17.0.200-172.17.0.220`) or CIDR. Without the instance flags, no Kuadrant CR, address pool or default Gateway is created. See [docs/addons.md](docs/addons.md) for the mechanics (portal field verification, gateway address via the class-scoped metallb).
 
 ### RHDH
 

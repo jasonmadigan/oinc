@@ -189,9 +189,11 @@ Mechanics worth knowing:
 
 ### Consumer-created Istio Gateways
 
-`--metallb-address-pool auto` creates the pool; consumer Gateways must also opt their generated Services into `oinc.io/metallb`. Add a ConfigMap in each Gateway namespace and reference it in the Gateway manifest **before creating the Gateway**. Istio merges the ConfigMap's `service` overlay into the generated Service. This uses Istio's [documented infrastructure parameters](https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/#automated-deployment).
+`--metallb-address-pool auto` creates the pool. The MetalLB addon installs `istio-system/oinc-gateway-defaults`, labelled `gateway.istio.io/defaults-for-class: istio`. Istio uses its Service overlay to set `spec.loadBalancerClass: oinc.io/metallb` for consumer Gateways in every namespace, including Gateways without infrastructure parameters. See [Istio GatewayClass defaults](https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/#gatewayclass-defaults).
 
-[examples/gateway-metallb.yaml](../examples/gateway-metallb.yaml) is a complete namespace, ConfigMap, and Gateway example. From the repository root, with the addons and pool installed:
+Existing GatewayClass defaults are reused when they specify the MetalLB class. Conflicting or duplicate defaults stop installation with an error. Gateway-specific infrastructure parameters take precedence; a NodePort or ClusterIP Service overlay must clear `loadBalancerClass` with `null`.
+
+[examples/gateway-metallb.yaml](../examples/gateway-metallb.yaml) also sets the class explicitly, for compatibility with older oinc versions. From the repository root, with the addons and pool installed:
 
 ```bash
 kubectl --context oinc apply -f examples/gateway-metallb.yaml
@@ -201,13 +203,13 @@ kubectl --context oinc -n consumer-gateways get svc example-gateway-istio \
   -o jsonpath='{.spec.loadBalancerClass}{"\n"}{.status.loadBalancer.ingress}{"\n"}'
 ```
 
-The Service should have class `oinc.io/metallb` and an ingress IP. Multiple Gateways can reference the same ConfigMap within one namespace. If a Gateway already has infrastructure parameters, add the Service class to its existing overlay. oinc configures its default and MCP Gateways automatically; it does not add infrastructure parameters to consumer manifests.
+The Service should have class `oinc.io/metallb` and an ingress IP. Multiple Gateways can reference the same ConfigMap within one namespace. If a Gateway already has infrastructure parameters, add the Service class to its existing overlay. The class defaults apply without modifying consumer Gateway manifests.
 
 ### Migration from v0.4.3
 
-v0.4.3 disabled MetalLB class scoping when an address pool was requested. v0.5.2 keeps `--lb-class=oinc.io/metallb` even with a pool, protecting MicroShift's class-less `openshift-ingress/router-default` Service. Consumer manifests that previously relied on unscoped allocation need the infrastructure configuration above, including every demo and test Gateway namespace.
+v0.4.3 disabled MetalLB class scoping when an address pool was requested. v0.5.2 keeps `--lb-class=oinc.io/metallb` even with a pool, protecting MicroShift's class-less `openshift-ingress/router-default` Service. The GatewayClass defaults now provide that class for new consumer Gateways. Existing class-less Services need recreation because `loadBalancerClass` is immutable.
 
-For disposable clusters, update oinc and the consumer manifests, recreate the cluster with `--metallb-address-pool auto`, then apply those manifests. Back up anything that must survive cluster deletion.
+For disposable clusters, update oinc, recreate the cluster with `--metallb-address-pool auto`, then apply the consumer manifests. Back up anything that must survive cluster deletion.
 
 To retain a cluster, save the affected Gateway manifests and add the infrastructure parameters. Create their ConfigMaps first, delete each affected Gateway with foreground cascading deletion, wait for its generated Service to disappear, then recreate it from the updated manifest. This interrupts traffic through that Gateway. For addon-owned Gateways, rerun `oinc addon install` with the original addon and instance flags after deletion so oinc recreates them. Redirect stdout with `>/dev/null` to force the non-interactive installer; the interactive planner may otherwise skip MCP when its controller and extension still exist. The Service class must be configured at creation; changing an existing Service's class is not a migration strategy. Do not remove MetalLB's scoping or change `router-default`.
 
