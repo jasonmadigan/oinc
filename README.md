@@ -202,7 +202,7 @@ oinc create --addons kuadrant@latest \
   --gateway-api-gateway
 ```
 
-`--metallb-address-pool` also takes an explicit range (`172.17.0.200-172.17.0.220`) or CIDR. Defaults are unchanged: without the flags the addons behave exactly as before. See [docs/addons.md](docs/addons.md) for the mechanics (portal field verification, gateway address via the class-scoped metallb).
+`--metallb-address-pool` also takes an explicit range (`172.17.0.200-172.17.0.220`) or CIDR. Without the instance flags, no Kuadrant CR, address pool or default Gateway is created. See [docs/addons.md](docs/addons.md) for the mechanics (portal field verification, gateway address via the class-scoped metallb).
 
 ### RHDH
 
